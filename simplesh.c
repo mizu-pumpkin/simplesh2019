@@ -31,6 +31,10 @@
 #include <sys/wait.h>
 #include <unistd.h>
 
+#include <pwd.h>
+#include <limits.h>
+#include <libgen.h>
+
 // Biblioteca readline
 #include <readline/readline.h>
 #include <readline/history.h>
