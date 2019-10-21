@@ -5,10 +5,10 @@
  * Departamento de Ingeniería y Tecnología de Computadores
  * Facultad de Informática de la Universidad de Murcia
  *
- * Alumnos: APELLIDOS, NOMBRE (GX.X)
- *          APELLIDOS, NOMBRE (GX.X)
+ * Alumnos: MARTÍNEZ MARTÍNEZ, EDUARDO (G2.1)
+ *          ZUCCA, MARISOL ISABEL (G2.1)
  *
- * Convocatoria: FEBRERO/JUNIO/JULIO
+ * Convocatoria: FEBRERO
  */
 
 
@@ -30,6 +30,10 @@
 #include <string.h>
 #include <sys/wait.h>
 #include <unistd.h>
+
+#include <pwd.h>
+#include <limits.h>
+#include <libgen.h>
 
 // Biblioteca readline
 #include <readline/readline.h>
