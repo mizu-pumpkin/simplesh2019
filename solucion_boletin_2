@@ -1,9 +1,11 @@
-___________________________________________________________________
+____________________________________________________________
 
-EJERCICIO 1
-___________________________________________________________________
+EJERCICIO 1: Modifica simplesh para que los ficheros se creen con permisos 700 y la semántica de las redirecciones sea la misma que tendrían si se ejecutasen los comandos en bash. Para realizar el ejercicio, utiliza los flags y el mode de open().
+____________________________________________________________
 
-##En parse_redr() sustituyo esto:
+>>>Leerse man 2 open
+
+>>>En parse_redr() sustituyo esto:
             case '<':
                 cmd = redrcmd(cmd, start_of_token, end_of_token, O_RDONLY, 0, STDIN_FILENO);
                 break;
@@ -13,7 +15,7 @@ ___________________________________________________________________
             case '+': // >>
                 cmd = redrcmd(cmd, start_of_token, end_of_token, O_RDWR|O_CREAT, 0, STDOUT_FILENO);
                 break;
-##por esto:
+>>>por esto:
             case '<':
                 cmd = redrcmd(cmd, start_of_token, end_of_token, O_RDONLY, S_IRWXU, STDIN_FILENO);
                 break;
@@ -24,54 +26,75 @@ ___________________________________________________________________
                 cmd = redrcmd(cmd, start_of_token, end_of_token, O_WRONLY|O_CREAT|O_APPEND, S_IRWXU, STDOUT_FILENO);
                 break;
 
-##En run_cmd() hay que cambiar esto:
+>>>En run_cmd() hay que cambiar esto:
 	if ((fd = open(rcmd->file, rcmd->flags)) < 0)
         {
         	perror("open");
                 exit(EXIT_FAILURE);
         }
-##por esto:
+>>>por esto:
 	if ((fd = open(rcmd->file, rcmd->flags, rcmd->mode)) < 0)
         {
         	perror("open");
                 exit(EXIT_FAILURE);
         }
-___________________________________________________________________
+____________________________________________________________
 
-EJERCICIO 2
-___________________________________________________________________
+EJERCICIO 2: Modifica el prompt para que muestre el
+usuario y el directorio de trabajo actual separados por el carácter @:
+    usuario@directorio > ␣ ...
+Para ello, únicamente se pueden usar llamadas POSIX o funciones de la biblioteca estándar de C (C11).
+Llamadas POSIX y/o glibc a considerar:
+    getuid()
+    getpwuid()
+    getcwd() (Versión POSIX sin extensiones GNU)
+    basename() (Versión POSIX)
+    sprintf()
+____________________________________________________________
 
 #include <pwd.h>        para getpwuid()
 #include <limits.h>     para PATH_MAX
 #include <libgen.h>     para otras cosas
 
-En «get_cmd»:
+>>>Cambiar esto:
+char* get_cmd()
+{
+    char* buf;
 
+    // Lee la orden tecleada por el usuario
+    buf = readline("simplesh> ");
+
+    // Si el usuario ha escrito una orden, almacenarla en la historia.
+    if(buf)
+        add_history(buf);
+
+    return buf;
+}
+>>>Por esto:
 char* get_cmd()
 {
     uid_t uid = getuid(); // Obtiene el uid
     struct passwd * passwd = getpwuid(uid); // Obtiene una entrada del fichero de cuentas del usuario
 
-    // Con respecto a los errores es necesario tratar los mostrados en la sección "errores" de los manuales de las funciones.
+    // Con respecto a los errores es necesario tratar los mostrados en la sección "errores" de los manuales de las funciones
     if (!passwd) {
             perror("getpwuid");
             exit(EXIT_FAILURE);
     }
 
-    char * user = passwd -> pw_name; // Nombre del usuario sacado de la entrada
+    char * user = passwd->pw_name; // Nombre del usuario sacado de la entrada
 
     char path[PATH_MAX];        // Ruta absoluta en el que se encuentra el usuario
-                                // La constante reserva el espacio necesario para la máxima ruta posible
 
     if (!getcwd(path, PATH_MAX)) {
         perror("getcwd");
         exit(EXIT_FAILURE);
     }
 
-    char * dir = basename(path); // Último directorio de la ruta absoluta
+    char * dir = basename(path); // Directorio en el que estamos sin la ruta absoluta
 
     char prompt[strlen(user) + strlen(dir) + 4]; // Reservar el espacio para el prompt
-    // + 4 por el arroba, el mayor que, el espacio y el valor nulo.
+    // + 4 por el arroba, el mayor que, el espacio y el valor nulo
 
     sprintf(prompt, "%s@%s> ", user, dir); // Almacena en el buffer la cadena del prompt
 

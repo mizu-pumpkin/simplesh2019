@@ -1043,10 +1043,35 @@ void free_cmd(struct cmd* cmd)
 
 char* get_cmd()
 {
+    uid_t uid = getuid(); // Obtiene el uid
+    struct passwd * passwd = getpwuid(uid); // Obtiene una entrada del fichero de cuentas del usuario
+
+    // Con respecto a los errores es necesario tratar los mostrados en la sección "errores" de los manuales de las funciones
+    if (!passwd) {
+            perror("getpwuid");
+            exit(EXIT_FAILURE);
+    }
+
+    char * user = passwd->pw_name; // Nombre del usuario sacado de la entrada
+
+    char path[PATH_MAX];        // Ruta absoluta en el que se encuentra el usuario
+
+    if (!getcwd(path, PATH_MAX)) {
+        perror("getcwd");
+        exit(EXIT_FAILURE);
+    }
+
+    char * dir = basename(path); // Directorio en el que estamos sin la ruta absoluta
+
+    char prompt[strlen(user) + strlen(dir) + 4]; // Reservar el espacio para el prompt
+    // + 4 por el arroba, el mayor que, el espacio y el valor nulo
+
+    sprintf(prompt, "%s@%s> ", user, dir); // Almacena en el buffer la cadena del prompt
+
     char* buf;
 
     // Lee la orden tecleada por el usuario
-    buf = readline("simplesh> ");
+    buf = readline(prompt);
 
     // Si el usuario ha escrito una orden, almacenarla en la historia.
     if(buf)
