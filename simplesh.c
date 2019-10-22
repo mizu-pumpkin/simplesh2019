@@ -1,4 +1,3 @@
-//MUORI
 /*
  * Shell `simplesh` (basado en el shell de xv6)
  *
@@ -677,13 +676,13 @@ struct cmd* parse_redr(struct cmd* cmd, char** start_of_str, char* end_of_str)
         switch(delimiter)
         {
             case '<':
-                cmd = redrcmd(cmd, start_of_token, end_of_token, O_RDONLY, 0, STDIN_FILENO);
+                cmd = redrcmd(cmd, start_of_token, end_of_token, O_RDONLY, S_IRWXU, STDIN_FILENO);
                 break;
             case '>':
-                cmd = redrcmd(cmd, start_of_token, end_of_token, O_RDWR|O_CREAT, 0, STDOUT_FILENO);
+                cmd = redrcmd(cmd, start_of_token, end_of_token, O_WRONLY|O_CREAT|O_TRUNC, S_IRWXU, STDOUT_FILENO);
                 break;
             case '+': // >>
-                cmd = redrcmd(cmd, start_of_token, end_of_token, O_RDWR|O_CREAT, 0, STDOUT_FILENO);
+                cmd = redrcmd(cmd, start_of_token, end_of_token, O_WRONLY|O_CREAT|O_APPEND, S_IRWXU, STDOUT_FILENO);
                 break;
         }
     }
@@ -797,7 +796,7 @@ void run_cmd(struct cmd* cmd)
             if (fork_or_panic("fork REDR") == 0)
             {
                 TRY( close(rcmd->fd) );
-                if ((fd = open(rcmd->file, rcmd->flags)) < 0)
+                if ((fd = open(rcmd->file, rcmd->flags, rcmd->mode)) < 0)
                 {
                     perror("open");
                     exit(EXIT_FAILURE);
@@ -1124,6 +1123,7 @@ int main(int argc, char** argv)
 
         // Libera la memoria de la línea de órdenes
         free(buf);
+        free(cmd);
     }
 
     DPRINTF(DBG_TRACE, "END\n");

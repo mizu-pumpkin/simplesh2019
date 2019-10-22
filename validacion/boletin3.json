@@ -1,0 +1,139 @@
+{
+    "setup": {
+        "desc": "B3r1",
+        "shell": "simplesh",
+        "prompt": "alumno@.*> ",
+        "timeout": 3,
+        "cmds": [
+            "dd if=/dev/urandom of=bytes bs=4k count=16k",
+            "cp bytes morebytes", "cp bytes evenmorebytes",
+            "(for l in $(seq 1 1000); do echo linea$l; done) > lineas"
+        ]
+    },
+    "tests": [
+        {
+            "cmd": "psplit -h | head -1",
+            "out": "^Uso: psplit \\[-l NLINES\\] \\[-b NBYTES\\] \\[-s BSIZE\\] \\[-p PROCS\\] \\[FILE1\\] \\[FILE2\\]\\.\\.\\.\\r\\n$"
+        },
+        {
+            "cmd": "psplit -h | head -3 | tail -1",
+            "out": "^.*-l NLINES Número máximo de líneas por fichero.\\r\\n$"
+        },
+        {
+            "cmd": "psplit -h | tail -2",
+            "out": "^.*-h        Ayuda\\r\\n\\r\\n$"
+        },
+        {
+            "cmd": "( echo 123456) | psplit -l 1 -b 1",
+            "out": "^psplit: Opciones incompatibles\\r\\n.*$"
+        },
+        {
+            "cmd": "( echo 123456) | psplit -s 10000000",
+            "out": "^psplit: Opción -s no válida\\r\\n.*$"
+        },
+
+        {
+            "cmd": "( echo 1; echo 2; echo 3; echo 4; echo 5) | psplit -l 2 ; wc -l stdin0 stdin1 stdin2 ; rm -f stdin0 stdin1 stdin2",
+            "out": "^ 2 stdin0\\r\\n 2 stdin1\\r\\n 1 stdin2\\r\\n 5 total\\r\\n$"
+        },
+        {
+            "cmd": "( echo -n 12345) | psplit -b 2 ; wc -c stdin0 stdin1 stdin2 ; rm -f stdin0 stdin1 stdin2",
+            "out": "^2 stdin0\\r\\n2 stdin1\\r\\n1 stdin2\\r\\n5 total\\r\\n$"
+        },
+        {
+            "cmd": "( echo 0; echo 1) | tee splitme | psplit -l 1 ; wc -c stdin0 stdin1 ; cat stdin0 ; cat stdin1 ; cat stdin0 stdin1 > splitmecopy ; diff splitme splitmecopy ; rm -f splitme splitmecopy",
+            "out": "^2 stdin0\\r\\n2 stdin1\\r\\n4 total\\r\\n0\\r\\n1\\r\\n$"
+        },
+        {
+            "cmd": "( echo 0; echo 1) | tee splitme | psplit -b 1 -s 10 ; wc -c stdin0 stdin1 stdin2 stdin3 ; cat stdin0 stdin1 stdin2 stdin3 ; cat stdin0 stdin1 stdin2 stdin3 > splitmecopy ; diff splitme splitmecopy ; rm -f splitme splitmecopy",
+            "out": "^1 stdin0\\r\\n1 stdin1\\r\\n1 stdin2\\r\\n1 stdin3\\r\\n4 total\\r\\n0\\r\\n1\\r\\n$"
+        },
+        {
+            "cmd": "( echo 0; echo 1) | tee splitme | psplit -b 1 -s  1 ; wc -c stdin0 stdin1 stdin2 stdin3 ; cat stdin0 stdin1 stdin2 stdin3 ; cat stdin0 stdin1 stdin2 stdin3 > splitmecopy ; diff splitme splitmecopy ; rm -f splitme splitmecopy",
+            "out": "^1 stdin0\\r\\n1 stdin1\\r\\n1 stdin2\\r\\n1 stdin3\\r\\n4 total\\r\\n0\\r\\n1\\r\\n$"
+        },
+
+        {
+            "cmd": "cat lineas | psplit -l 1001          ; cat stdin0 | tail -1 ; rm -f stdin0",
+            "out": "^linea1000\\r\\n$"
+        },
+        {
+            "cmd": "cat lineas | psplit -l 1000          ; cat stdin0 | tail -1 ; rm -f stdin0",
+            "out": "^linea1000\\r\\n$"
+        },
+        {
+            "cmd": "cat lineas | psplit -l 1000 -s 1     ; cat stdin0 | tail -1 ; rm -f stdin0",
+            "out": "^linea1000\\r\\n$"
+        },
+        {
+            "cmd": "cat lineas | psplit -l 1000 -s 65536 ; cat stdin0 | tail -1 ; rm -f stdin0",
+            "out": "^linea1000\\r\\n$"
+        },
+        {
+            "cmd": "cat lineas | psplit -l  999 ; cat stdin1 ; rm -f stdin0 stdin1",
+            "out": "^linea1000\\r\\n$"
+        },
+
+        {
+            "cmd": "cat bytes  | psplit -b 1024          ; wc -c stdin65535 ; rm -f stdin0 stdin1",
+            "out": "^1024 stdin65535\\r\\n$"
+        },
+        {
+            "cmd": "cat bytes  | psplit -b 1024 -s   128 ; wc -c stdin65535 ; rm -f stdin0 stdin1",
+            "out": "^1024 stdin65535\\r\\n$"
+        },
+        {
+            "cmd": "cat bytes  | psplit -b 1024 -s 65536 ; wc -c stdin65535 ; rm -f stdin0 stdin1",
+            "out": "^1024 stdin65535\\r\\n$"
+        },
+        {
+            "cmd": "cat bytes  | psplit -b 1000          ; wc -c stdin67108 ; rm -f stdin0 stdin1",
+            "out": "^864 stdin67108\\r\\n$"
+        },
+        {
+            "cmd": "cat bytes  | psplit -b 1000 -s   128 ; wc -c stdin67108 ; rm -f stdin0 stdin1",
+            "out": "^864 stdin67108\\r\\n$"
+        },
+        {
+            "cmd": "cat bytes  | psplit -b 1000 -s 65536 ; wc -c stdin67108 ; rm -f stdin0 stdin1",
+            "out": "^864 stdin67108\\r\\n$"
+        },
+        {
+            "cmd": "cat bytes  | psplit -b 32000000 ; cat stdin0 stdin1 stdin2 > bytescopy ; diff -s bytes bytescopy",
+            "out": "^Los archivos bytes y bytescopy son idénticos\\r\\n$"
+        },
+        {
+            "cmd": "psplit -b 32000000            bytes morebytes ; cat bytes0 morebytes1 bytes2 > bytescopy ; diff -s morebytes bytescopy",
+            "out": "^Los archivos morebytes y bytescopy son idénticos\\r\\n$"
+        },
+        {
+            "cmd": "psplit -b 32000000 -s     128 bytes morebytes ; cat bytes0 morebytes1 bytes2 > bytescopy ; diff -s morebytes bytescopy",
+            "out": "^Los archivos morebytes y bytescopy son idénticos\\r\\n$"
+        },
+        {
+            "cmd": "psplit -b 32000000 -s 1048576 bytes morebytes ; cat bytes0 morebytes1 bytes2 > bytescopy ; diff -s morebytes bytescopy",
+            "out": "^Los archivos morebytes y bytescopy son idénticos\\r\\n$"
+        },
+
+        {
+            "cmd": "psplit -b 4096 -s 4096 bytes -p 1",
+            "out": ""
+        },
+        {
+            "cmd": "psplit -b 4096 -s 4096 bytes -p 2",
+            "out": ""
+        },
+        {
+            "cmd": "psplit -b 4096 -s 4096 bytes morebytes -p 1",
+            "out": ""
+        },
+        {
+            "cmd": "psplit -b 4096 -s 4096 bytes morebytes -p 2",
+            "out": ""
+        },
+        {
+            "cmd": "psplit -b 4096 -s 4096 bytes morebytes evenmorebytes -p 3",
+            "out": ""
+        }
+    ]
+}
