@@ -34,6 +34,7 @@
 #include <pwd.h>        //para getpwuid()
 #include <limits.h>     //para PATH_MAX
 #include <libgen.h>     //para otras cosas
+#include <signal.h>     //para señales
 
 // Biblioteca readline
 #include <readline/readline.h>
@@ -43,7 +44,7 @@
 /******************************************************************************
  * Constantes, macros y variables globales
  ******************************************************************************/
-#define NUMERO_INTERNOS 3
+#define NUMERO_INTERNOS 4
 
 static const char* VERSION = "0.19";
 
@@ -802,11 +803,13 @@ void run_cmd(struct cmd* cmd)
             break;
 
         case REDR:
-            /*TODO
+            /*TODO 
              *     simplesh > exit > salida
              *    [ bash ]
              *    # La salida de "exit" se redirige al fichero salida que se crea con tamaño cero.
              *    # Se requiere el uso de llamadas para manipulación de descriptores de fichero.
+             *
+             *    test 10 bol 2: cd dir >> emptyfile ; cwd ; cat ../emptyfile
              */
             rcmd = (struct redrcmd*) cmd;
             if (fork_or_panic("fork REDR") == 0)
@@ -1120,7 +1123,7 @@ char* get_cmd()
  * Comandos internos
  * ***************************************************************************/
 
-char * comandos_internos[NUMERO_INTERNOS] = {"cwd", "exit", "cd"};
+char * comandos_internos[NUMERO_INTERNOS] = {"cwd", "exit", "cd", "psplit"};
 
 int check_internal(struct execcmd * ecmd)
 {
@@ -1215,6 +1218,37 @@ void run_internal(struct cmd * cmd, int command)
     }
 }
 
+/*****************************************************************************
+ * Señales
+ * ***************************************************************************/
+void treat_signals()
+{
+    sigset_t blockedsigset;
+    //simplesh debe bloquear la señal SIGINT (CTRL+C)
+    if (sigemptyset(&blockedsigset)==-1) {
+        perror("sigemptyset");
+        exit(EXIT_FAILURE);
+    }
+    if (sigaddset(&blockedsigset, SIGINT)==-1) {
+        perror("sigaddset");
+        exit(EXIT_FAILURE);
+    }
+    if (sigprocmask(SIG_BLOCK, &blockedsigset, NULL)==-1) {
+        perror("sigprocmask");
+        exit(EXIT_FAILURE);
+    }
+    //simplesh debe ignorar la señal SIGQUIT (CTRL+\)
+    struct sigaction sigact;
+    sigact.sa_handler = SIG_IGN;
+    /* FIXME
+    sigact.sa_mask = NULL;
+    sigact.sa_flags = 0;*/
+    if(sigaction(SIGQUIT, &sigact, NULL)==-1) {
+        perror("sigaction");
+        exit(EXIT_FAILURE);
+    }
+}
+
 /******************************************************************************
  * Bucle principal de `simplesh`
  ******************************************************************************/
@@ -1265,6 +1299,9 @@ int main(int argc, char** argv)
         perror("unsetenv");
         exit(EXIT_FAILURE);
     }
+    
+    //Bloquea la señal SIGINT y ignora SIGQUIT
+    treat_signals();
 
     // Bucle de lectura y ejecución de órdenes
     while ((buf = get_cmd()) != NULL)
