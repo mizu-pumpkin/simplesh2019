@@ -802,6 +802,12 @@ void run_cmd(struct cmd* cmd)
             break;
 
         case REDR:
+            /*TODO
+             *     simplesh > exit > salida
+             *    [ bash ]
+             *    # La salida de "exit" se redirige al fichero salida que se crea con tamaño cero.
+             *    # Se requiere el uso de llamadas para manipulación de descriptores de fichero.
+             */
             rcmd = (struct redrcmd*) cmd;
             if (fork_or_panic("fork REDR") == 0)
             {
@@ -1146,9 +1152,49 @@ void run_exit(struct cmd * cmd)
     exit(EXIT_SUCCESS);
 }
 
-void run_cd(cmd)
+void run_cd(struct execcmd * ecmd)
 {
+    char * path;
     
+    switch(ecmd->argc)
+    {
+        case 1:
+            if (!(path = getenv("HOME"))) {
+                perror("getenv");
+                exit(EXIT_FAILURE);
+            }
+            break;
+        case 2:
+            if (!strcmp(ecmd->argv[1], "-"))
+            {
+                if (!(path = getenv("OLDPWD"))) {
+                    printf("run_cd: Variable OLDPWD no definida\n");
+                    return;
+                }
+            }
+            else
+                path = ecmd->argv[1];
+            break;
+        default:
+            printf("run_cd: Demasiados argumentos\n");
+            return;
+    }
+    
+    char old_path[PATH_MAX];
+    if (!getcwd(old_path, PATH_MAX)) {
+        perror("getcwd");
+        exit(EXIT_FAILURE);
+    }
+    if (setenv("OLDPWD", old_path, 1)==-1) {
+        perror("setenv");
+        exit(EXIT_FAILURE);
+    }
+    
+    if (chdir(path)==-1) {
+        perror("chdir");
+        if (errno!=ENOENT)
+            exit(EXIT_FAILURE);
+    }
 }
 
 void run_internal(struct cmd * cmd, int command)
@@ -1161,7 +1207,7 @@ void run_internal(struct cmd * cmd, int command)
             run_exit(cmd);
             break;
         case 2:
-            run_cd(cmd);
+            run_cd((struct execcmd*) cmd);
             break;
     }
 }
@@ -1210,6 +1256,12 @@ int main(int argc, char** argv)
     parse_args(argc, argv);
 
     DPRINTF(DBG_TRACE, "STR\n");
+    
+    //Elimina la variable de entorno OLDPWD
+    if (unsetenv("OLDPWD") == -1) {
+        perror("unsetenv");
+        exit(EXIT_FAILURE);
+    }
 
     // Bucle de lectura y ejecución de órdenes
     while ((buf = get_cmd()) != NULL)

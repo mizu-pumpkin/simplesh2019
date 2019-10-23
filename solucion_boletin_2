@@ -161,7 +161,7 @@ El comportamiento de simplesh cuando se ejecuta cualquiera de los comandos inter
     simplesh > ( exit )
     simplesh >
     # El comando "exit" se ejecuta pero simplesh no finaliza su ejecución.
-    
+//TODO    
     simplesh > exit > salida
     [ bash ]
     # La salida de "exit" se redirige al fichero salida que se crea con tamaño cero.
