@@ -2,7 +2,7 @@
     "setup": {
         "desc": "B3r1",
         "shell": "simplesh",
-        "prompt": "alumno@.*> ",
+        "prompt": "mizu@.*> ",
         "timeout": 3,
         "cmds": [
             "dd if=/dev/urandom of=bytes bs=4k count=16k",

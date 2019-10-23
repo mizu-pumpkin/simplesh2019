@@ -2,7 +2,7 @@
     "setup": {
         "desc": "B2r1",
         "shell": "simplesh",
-        "prompt": "alumno@.*> ",
+        "prompt": "mizu@.*> ",
         "timeout": 3,
         "cmds": [
             "touch f1",
@@ -102,7 +102,7 @@
 
         {
             "cmd": "cd ; cwd",
-            "out": "^cwd: /home/alumno\\r\\n$"
+            "out": "^cwd: /home/mizu\\r\\n$"
         },
         {
             "cmd": "cd -",

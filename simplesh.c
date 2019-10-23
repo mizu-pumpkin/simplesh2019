@@ -454,7 +454,7 @@ struct cmd* parse_redr(struct cmd*, char**, char*);
 struct cmd* null_terminate(struct cmd*);
 
 int check_internal(struct execcmd * ecmd);
-void run_internal(struct execcmd * ecmd, int command);
+void run_internal(struct cmd * cmd, int command);
 
 
 // `parse_cmd` realiza el *análisis sintáctico* de la línea de órdenes
@@ -790,15 +790,15 @@ void run_cmd(struct cmd* cmd)
     {
         case EXEC:
             ecmd = (struct execcmd*) cmd;
-            if (fork_or_panic("fork EXEC") == 0)
+            interno = check_internal(ecmd);
+            if (interno != -1)
+                run_internal(cmd, interno);
+            else
             {
-                interno = check_internal(ecmd);
-                if (interno != -1)
-                    run_internal(ecmd, interno);
-                else    
+                if (fork_or_panic("fork EXEC") == 0)
                     exec_cmd(ecmd);
-            } else
                 TRY( wait(NULL) );
+            }
             break;
 
         case REDR:
@@ -816,7 +816,7 @@ void run_cmd(struct cmd* cmd)
                     ecmd = (struct execcmd*) rcmd->cmd;
                     interno = check_internal(ecmd);
                     if (interno != -1)
-                        run_internal(ecmd, interno);
+                        run_internal(cmd, interno);
                     else
                         exec_cmd(ecmd);
                 } else
@@ -851,7 +851,7 @@ void run_cmd(struct cmd* cmd)
                     ecmd = (struct execcmd*) pcmd->left;
                     interno = check_internal(ecmd);
                     if (interno != -1)
-                        run_internal(ecmd, interno);
+                        run_internal(cmd, interno);
                     else
                         exec_cmd(ecmd);
                 } else
@@ -870,7 +870,7 @@ void run_cmd(struct cmd* cmd)
                     ecmd = (struct execcmd*) pcmd->right;
                     interno = check_internal(ecmd);
                     if (interno != -1)
-                        run_internal(ecmd, interno);
+                        run_internal(cmd, interno);
                     else
                         exec_cmd(ecmd);
                 } else
@@ -893,7 +893,7 @@ void run_cmd(struct cmd* cmd)
                     ecmd = (struct execcmd*) bcmd->cmd;
                     interno = check_internal(ecmd);
                     if (interno != -1)
-                        run_internal(ecmd, interno);
+                        run_internal(cmd, interno);
                     else
                         exec_cmd(ecmd);
                 } else
@@ -1139,27 +1139,29 @@ void run_cwd(void)
     printf("cwd: %s\n", path);
 }
 
-void run_exit()
+void run_exit(struct cmd * cmd)
+{
+    free_cmd(cmd);
+    free(cmd);
+    exit(EXIT_SUCCESS);
+}
+
+void run_cd(cmd)
 {
     
 }
 
-void run_cd(char * path, int argc)
-{
-    
-}
-
-void run_internal(struct execcmd * ecmd, int command)
+void run_internal(struct cmd * cmd, int command)
 {
     switch(command) {
         case 0:
             run_cwd();
             break;
         case 1:
-            run_exit();
+            run_exit(cmd);
             break;
         case 2:
-            run_cd(ecmd->argv[1], ecmd->argc);
+            run_cd(cmd);
             break;
     }
 }
@@ -1228,10 +1230,10 @@ int main(int argc, char** argv)
 
         // Libera la memoria de las estructuras `cmd`
         free_cmd(cmd);
+        free(cmd);
 
         // Libera la memoria de la línea de órdenes
         free(buf);
-        free(cmd);
     }
 
     DPRINTF(DBG_TRACE, "END\n");

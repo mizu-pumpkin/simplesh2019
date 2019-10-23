@@ -137,8 +137,7 @@ EJERCICIO 4: Implementa el comando interno exit:
     [ bash ]
 Para ello, únicamente se pueden usar llamadas al sistema POSIX o funciones de la biblioteca estándar de C (C11).
 Llamadas POSIX y/o glibc a considerar: exit
-Para implementar exit, escribe la función run_exit() e inserta llamadas a la misma en simplesh.c donde sea necesario.
-Nótese que exit sólo termina el proceso que ejecuta la llamada.
+Para implementar exit, escribe la función run_exit() e inserta llamadas a la misma en simplesh.c donde sea necesario. Nótese que exit sólo termina el proceso que ejecuta la llamada.
 Verifica que simplesh finaliza siempre que encuentra el comando interno exit (el segundo echo no se ejecuta):
     simplesh > echo 1 ; exit ; echo 2
     [ bash ]
@@ -166,7 +165,7 @@ El comportamiento de simplesh cuando se ejecuta cualquiera de los comandos inter
     simplesh > exit > salida
     [ bash ]
     # La salida de "exit" se redirige al fichero salida que se crea con tamaño cero.
-    # Se requiere el uso de llamadas para manipulaci ó n de descriptores de fichero.
+    # Se requiere el uso de llamadas para manipulación de descriptores de fichero.
 ____________________________________________________________
 
 EJERCICIO 5(a): Implementa el comando interno cd dir:
