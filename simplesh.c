@@ -1191,9 +1191,12 @@ void run_cd(struct execcmd * ecmd)
     }
     
     if (chdir(path)==-1) {
-        perror("chdir");
-        if (errno!=ENOENT)
+        if (errno==ENOENT)
+            printf("run_cd: No existe el directorio '%s'\n", path);
+        else {
+            perror("chdir");
             exit(EXIT_FAILURE);
+        }
     }
 }
 
