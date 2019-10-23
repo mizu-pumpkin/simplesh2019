@@ -52,9 +52,10 @@ Llamadas POSIX y/o glibc a considerar:
     sprintf()
 ____________________________________________________________
 
-#include <pwd.h>        para getpwuid()
-#include <limits.h>     para PATH_MAX
-#include <libgen.h>     para otras cosas
+>>>Añadir esto:
+#include <pwd.h>        //para getpwuid()
+#include <limits.h>     //para PATH_MAX
+#include <libgen.h>     //para otras cosas
 
 >>>Cambiar esto:
 char* get_cmd()
@@ -101,7 +102,6 @@ char* get_cmd()
     char* buf;
 
     // Lee la orden tecleada por el usuario
-    // ahora muestra el prompt
     buf = readline(prompt);
 
     // Si el usuario ha escrito una orden, almacenarla en la historia.
@@ -111,10 +111,103 @@ char* get_cmd()
     return buf;
 }
 
-Es recomendable que código relacionado con los comandos internos esté implementado en funciones en aras de la legibilidad y la modularidad.
+____________________________________________________________
 
-Tercer ejercicio:
+EJERCICIO 3: Implementa el comando interno cwd:
+    simplesh > cwd
+    cwd : / ruta / a / directorio
+Para ello, únicamente se pueden usar llamadas al sistema POSIX o funciones de la biblioteca estándar de C (C11).
+Llamadas POSIX y/o glibc a considerar:
+    getcwd() (Versión POSIX sin extensiones GNU)
+Para implementar cwd, escribe la función run_cwd() e inserta
+llamadas a la misma en simplesh.c donde sea necesario.
+____________________________________________________________
+1 Escribe la función run_cwd() respetando fielmente el enunciado
+2 Verifica que la función run_cwd() funciona correctamente
+3 Escribe una función que dado un comando, determine si es interno
+4 Usa la función anterior para saber cuando llamar a run_cwd()
+5 Analiza cada llamada a la función exec_cmd() dentro de run_cmd() para saber dónde hay que llamar a run_cwd(), para ejecutar el comando interno cwd, en lugar de llamar a exec_cmd()
+6 Escribe e inserta llamadas a las funciones run_exit() y run_cd() siguiendo la misma estrategia que con run_cwd()
+7 Asegúrate de que los tres comandos internos del boletín exhiben el comportamiento esperado con ./simplesh.py -i boletin2.json
+8 Comprueba que no hay fugas de memoria con ./valgrind.sh
+____________________________________________________________
 
-Cuarto ejercicio:
+EJERCICIO 4: Implementa el comando interno exit:
+    simplesh > exit
+    [ bash ]
+Para ello, únicamente se pueden usar llamadas al sistema POSIX o funciones de la biblioteca estándar de C (C11).
+Llamadas POSIX y/o glibc a considerar: exit
+Para implementar exit, escribe la función run_exit() e inserta llamadas a la misma en simplesh.c donde sea necesario.
+Nótese que exit sólo termina el proceso que ejecuta la llamada.
+Verifica que simplesh finaliza siempre que encuentra el comando interno exit (el segundo echo no se ejecuta):
+    simplesh > echo 1 ; exit ; echo 2
+    [ bash ]
+Comprueba que tras ejecutar exit se libera toda la memoria
+____________________________________________________________
 
-Simplemente hay que liberar la memoria y ejecutar un exit.
+El comportamiento de simplesh cuando se ejecuta cualquiera de los comandos internos tiene que ser similar al de bash en estos casos:
+    simplesh > echo 1; exit ; echo 2
+    1
+    [ bash ]
+    # El comando "echo 2" no se ejecuta.
+    
+    simplesh > echo 1 | exit
+    simplesh >
+    # El comando "echo 1" se ejecuta pero su salida es ignorada por "exit".
+    # El comando "exit" se ejecuta pero simplesh no finaliza su ejecución.
+    
+    simplesh > exit &
+    simplesh >
+    
+    simplesh > ( exit )
+    simplesh >
+    # El comando "exit" se ejecuta pero simplesh no finaliza su ejecución.
+    
+    simplesh > exit > salida
+    [ bash ]
+    # La salida de "exit" se redirige al fichero salida que se crea con tamaño cero.
+    # Se requiere el uso de llamadas para manipulaci ó n de descriptores de fichero.
+____________________________________________________________
+
+EJERCICIO 5(a): Implementa el comando interno cd dir:
+    simplesh > cwd
+    cwd : / home / usuario
+    simplesh > cd directorio
+    simplesh > cwd
+    cwd : / home / usuario / directorio
+Para ello, únicamente se pueden usar llamadas al sistema POSIX o funciones de la biblioteca estándar de C (C11).
+Llamadas POSIX y/o glibc a considerar: chdir()
+Para implementar cd, escribe la función run_cd() e inserta
+llamadas a la misma en simplesh.c donde sea necesario.
+Nótese que chdir() sólo cambia el directorio actual del proceso que ejecuta la llamada.
+Verifica que simplesh modifica el directorio actual siempre que encuentra el comando interno cd:
+    simplesh > cwd ; cd directorio ; cwd ; cd .. ; cwd
+    cwd : / home / usuario
+    cwd : / home / usuario / directorio
+    cwd : / home / usuario
+____________________________________________________________
+
+____________________________________________________________
+
+EJERCICIO 5 (b): Implementa el comando interno cd [-]:
+    simplesh > cd -
+    run_cd : Variable OLDPWD no definida
+    simplesh > cwd
+    cwd : / home / usuario / directorio
+    simplesh > cd
+    simplesh > cwd
+    cwd : / home / usuario
+    simplesh > cd -
+    simplesh > cwd
+    cwd : / home / usuario / directorio
+El directorio por defecto es el valor de la variable de entorno HOME, mientras que OLDPWD contiene el directorio de trabajo previo (NB: Cuando se inicia simplesh, se debe eliminar la variable de entorno OLDPWD. Sólo tras la ejecución con éxito del primer comando interno cd, se definirá la variable OLDPWD con el directorio de trabajo inicial. A partir de entonces, la variable OLDPWD se
+actualizará cada vez que se ejecute con éxito el comando interno cd, asignándole el directorio de trabajo previo.)
+Llamadas POSIX y/o glibc a considerar: getcwd(), getenv(),
+setenv() y unsetenv()
+Verifica que simplesh modifica el directorio actual siempre que encuentra el comando interno cd:
+    simplesh > cwd ; cd ; cwd ; cd - ; cwd
+    cwd : / home / usuario / directorio
+    cwd : / home / usuario
+    cwd : / home / usuario / directorio
+____________________________________________________________
+

@@ -31,9 +31,9 @@
 #include <sys/wait.h>
 #include <unistd.h>
 
-#include <pwd.h>
-#include <limits.h>
-#include <libgen.h>
+#include <pwd.h>        //para getpwuid()
+#include <limits.h>     //para PATH_MAX
+#include <libgen.h>     //para otras cosas
 
 // Biblioteca readline
 #include <readline/readline.h>
@@ -43,7 +43,7 @@
 /******************************************************************************
  * Constantes, macros y variables globales
  ******************************************************************************/
-
+#define NUMERO_INTERNOS 3
 
 static const char* VERSION = "0.19";
 
@@ -453,6 +453,9 @@ struct cmd* parse_subs(char**, char*);
 struct cmd* parse_redr(struct cmd*, char**, char*);
 struct cmd* null_terminate(struct cmd*);
 
+int check_internal(struct execcmd * ecmd);
+void run_internal(struct execcmd * ecmd, int command);
+
 
 // `parse_cmd` realiza el *análisis sintáctico* de la línea de órdenes
 // introducida por el usuario.
@@ -777,6 +780,7 @@ void run_cmd(struct cmd* cmd)
     struct subscmd* scmd;
     int p[2];
     int fd;
+    int interno = -1;
 
     DPRINTF(DBG_TRACE, "STR\n");
 
@@ -787,8 +791,14 @@ void run_cmd(struct cmd* cmd)
         case EXEC:
             ecmd = (struct execcmd*) cmd;
             if (fork_or_panic("fork EXEC") == 0)
-                exec_cmd(ecmd);
-            TRY( wait(NULL) );
+            {
+                interno = check_internal(ecmd);
+                if (interno != -1)
+                    run_internal(ecmd, interno);
+                else    
+                    exec_cmd(ecmd);
+            } else
+                TRY( wait(NULL) );
             break;
 
         case REDR:
@@ -802,9 +812,14 @@ void run_cmd(struct cmd* cmd)
                     exit(EXIT_FAILURE);
                 }
 
-                if (rcmd->cmd->type == EXEC)
-                    exec_cmd((struct execcmd*) rcmd->cmd);
-                else
+                if (rcmd->cmd->type == EXEC) {
+                    ecmd = (struct execcmd*) rcmd->cmd;
+                    interno = check_internal(ecmd);
+                    if (interno != -1)
+                        run_internal(ecmd, interno);
+                    else
+                        exec_cmd(ecmd);
+                } else
                     run_cmd(rcmd->cmd);
                 exit(EXIT_SUCCESS);
             }
@@ -832,9 +847,14 @@ void run_cmd(struct cmd* cmd)
                 TRY( dup(p[1]) );
                 TRY( close(p[0]) );
                 TRY( close(p[1]) );
-                if (pcmd->left->type == EXEC)
-                    exec_cmd((struct execcmd*) pcmd->left);
-                else
+                if (pcmd->left->type == EXEC) {
+                    ecmd = (struct execcmd*) pcmd->left;
+                    interno = check_internal(ecmd);
+                    if (interno != -1)
+                        run_internal(ecmd, interno);
+                    else
+                        exec_cmd(ecmd);
+                } else
                     run_cmd(pcmd->left);
                 exit(EXIT_SUCCESS);
             }
@@ -846,9 +866,14 @@ void run_cmd(struct cmd* cmd)
                 TRY( dup(p[0]) );
                 TRY( close(p[0]) );
                 TRY( close(p[1]) );
-                if (pcmd->right->type == EXEC)
-                    exec_cmd((struct execcmd*) pcmd->right);
-                else
+                if (pcmd->right->type == EXEC) {
+                    ecmd = (struct execcmd*) pcmd->right;
+                    interno = check_internal(ecmd);
+                    if (interno != -1)
+                        run_internal(ecmd, interno);
+                    else
+                        exec_cmd(ecmd);
+                } else
                     run_cmd(pcmd->right);
                 exit(EXIT_SUCCESS);
             }
@@ -864,9 +889,14 @@ void run_cmd(struct cmd* cmd)
             bcmd = (struct backcmd*)cmd;
             if (fork_or_panic("fork BACK") == 0)
             {
-                if (bcmd->cmd->type == EXEC)
-                    exec_cmd((struct execcmd*) bcmd->cmd);
-                else
+                if (bcmd->cmd->type == EXEC) {
+                    ecmd = (struct execcmd*) bcmd->cmd;
+                    interno = check_internal(ecmd);
+                    if (interno != -1)
+                        run_internal(ecmd, interno);
+                    else
+                        exec_cmd(ecmd);
+                } else
                     run_cmd(bcmd->cmd);
                 exit(EXIT_SUCCESS);
             }
@@ -1080,6 +1110,59 @@ char* get_cmd()
     return buf;
 }
 
+/*****************************************************************************
+ * Comandos internos
+ * ***************************************************************************/
+
+char * comandos_internos[NUMERO_INTERNOS] = {"cwd", "exit", "cd"};
+
+int check_internal(struct execcmd * ecmd)
+{
+    if (!ecmd || !ecmd->argv[0])
+        return -1;
+    
+    for (int i=0; i<NUMERO_INTERNOS; i++)
+        if (!strcmp(ecmd->argv[0], comandos_internos[i]))
+            return i;
+    return -1;
+}
+
+void run_cwd(void)
+{
+    char path[PATH_MAX];
+
+    if (!getcwd(path, PATH_MAX)) {
+        perror("getcwd");
+        exit(EXIT_FAILURE);
+    }
+
+    printf("cwd: %s\n", path);
+}
+
+void run_exit()
+{
+    
+}
+
+void run_cd(char * path, int argc)
+{
+    
+}
+
+void run_internal(struct execcmd * ecmd, int command)
+{
+    switch(command) {
+        case 0:
+            run_cwd();
+            break;
+        case 1:
+            run_exit();
+            break;
+        case 2:
+            run_cd(ecmd->argv[1], ecmd->argc);
+            break;
+    }
+}
 
 /******************************************************************************
  * Bucle principal de `simplesh`
