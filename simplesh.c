@@ -44,7 +44,12 @@
 /******************************************************************************
  * Constantes, macros y variables globales
  ******************************************************************************/
-#define NUMERO_INTERNOS 4
+
+// Comandos internos
+#define N_COMANDOS_INTERNOS 4
+
+char * comandos_internos[N_COMANDOS_INTERNOS] = {"cwd", "exit", "cd", "psplit"};
+
 
 static const char* VERSION = "0.19";
 
@@ -456,6 +461,7 @@ struct cmd* null_terminate(struct cmd*);
 
 int check_internal(struct execcmd * ecmd);
 void run_internal(struct cmd * cmd, int command);
+void register_handler();
 
 
 // `parse_cmd` realiza el *análisis sintáctico* de la línea de órdenes
@@ -771,6 +777,7 @@ void exec_cmd(struct execcmd* ecmd)
 }
 
 
+//FIXME Modificar run_cmd() para que la ejecución de los comandos en segundo plano no interfiera con la de los comandos en primer plano
 void run_cmd(struct cmd* cmd)
 {
     struct execcmd* ecmd;
@@ -798,12 +805,13 @@ void run_cmd(struct cmd* cmd)
             {
                 if (fork_or_panic("fork EXEC") == 0)
                     exec_cmd(ecmd);
+                //FIXME va qui il wait?
                 TRY( wait(NULL) );
             }
             break;
 
         case REDR:
-            /*TODO 
+            /*FIXME
              *     simplesh > exit > salida
              *    [ bash ]
              *    # La salida de "exit" se redirige al fichero salida que se crea con tamaño cero.
@@ -820,12 +828,12 @@ void run_cmd(struct cmd* cmd)
                     perror("open");
                     exit(EXIT_FAILURE);
                 }
-
                 if (rcmd->cmd->type == EXEC) {
                     ecmd = (struct execcmd*) rcmd->cmd;
                     interno = check_internal(ecmd);
-                    if (interno != -1)
+                    if (interno != -1) {
                         run_internal(cmd, interno);
+                    }
                     else
                         exec_cmd(ecmd);
                 } else
@@ -891,20 +899,24 @@ void run_cmd(struct cmd* cmd)
 
             // Esperar a ambos hijos
             TRY( wait(NULL) );
-            TRY( wait(NULL) );
+            TRY( wait(NULL) );  //FIXME ERROR: rc=-1 errno=10 (No child processes)
             break;
 
         case BACK:
             bcmd = (struct backcmd*)cmd;
+            register_handler();
             if (fork_or_panic("fork BACK") == 0)
             {
+                //FIXME Envía [PID] a stdout
+                printf("[%d]\n",getpid());
                 if (bcmd->cmd->type == EXEC) {
                     ecmd = (struct execcmd*) bcmd->cmd;
                     interno = check_internal(ecmd);
                     if (interno != -1)
                         run_internal(cmd, interno);
-                    else
+                    else {
                         exec_cmd(ecmd);
+                    }
                 } else
                     run_cmd(bcmd->cmd);
                 exit(EXIT_SUCCESS);
@@ -1119,22 +1131,23 @@ char* get_cmd()
     return buf;
 }
 
+
 /*****************************************************************************
  * Comandos internos
  * ***************************************************************************/
 
-char * comandos_internos[NUMERO_INTERNOS] = {"cwd", "exit", "cd", "psplit"};
 
 int check_internal(struct execcmd * ecmd)
 {
     if (!ecmd || !ecmd->argv[0])
         return -1;
     
-    for (int i=0; i<NUMERO_INTERNOS; i++)
+    for (int i=0; i<N_COMANDOS_INTERNOS; i++)
         if (!strcmp(ecmd->argv[0], comandos_internos[i]))
             return i;
     return -1;
 }
+
 
 void run_cwd(void)
 {
@@ -1148,12 +1161,14 @@ void run_cwd(void)
     printf("cwd: %s\n", path);
 }
 
+
 void run_exit(struct cmd * cmd)
 {
     free_cmd(cmd);
     free(cmd);
     exit(EXIT_SUCCESS);
 }
+
 
 void run_cd(struct execcmd * ecmd)
 {
@@ -1203,6 +1218,7 @@ void run_cd(struct execcmd * ecmd)
     }
 }
 
+
 void run_internal(struct cmd * cmd, int command)
 {
     switch(command) {
@@ -1218,9 +1234,12 @@ void run_internal(struct cmd * cmd, int command)
     }
 }
 
+
 /*****************************************************************************
  * Señales
  * ***************************************************************************/
+
+
 void treat_signals()
 {
     sigset_t blockedsigset;
@@ -1240,14 +1259,42 @@ void treat_signals()
     //simplesh debe ignorar la señal SIGQUIT (CTRL+\)
     struct sigaction sigact;
     sigact.sa_handler = SIG_IGN;
-    /* FIXME
-    sigact.sa_mask = NULL;
-    sigact.sa_flags = 0;*/
+    sigemptyset(&sigact.sa_mask);   //FIXME necesario?
+    sigact.sa_flags = 0;            //FIXME necesario?
     if(sigaction(SIGQUIT, &sigact, NULL)==-1) {
         perror("sigaction");
         exit(EXIT_FAILURE);
     }
 }
+
+
+// Manejador de señales para la señal SIGCHLD
+void handle_sigchld(int sig)
+{
+    int saved_errno = errno;
+    pid_t pid;
+    // Evita que los procesos creados para comandos en segundo plano se conviertan en procesos zombies al terminar
+    while ((pid = waitpid((pid_t)(-1), 0, WNOHANG)) > 0) {
+        // Envia [PID] a stdout cuando termina la ejecución de un proceso creado para un comando en segundo plano
+        printf("[%d]",pid);// FIXME 
+    }
+    errno = saved_errno;
+}
+
+
+// You should do this before any child processes terminate, which in practice means registering before any are spawned
+void register_handler()
+{
+    struct sigaction sa;
+    sa.sa_handler = &handle_sigchld;
+    sigemptyset(&sa.sa_mask);
+    sa.sa_flags = SA_RESTART | SA_NOCLDSTOP;
+    if (sigaction(SIGCHLD, &sa, 0) == -1) {
+        perror(0);
+        exit(1);
+    }
+}
+
 
 /******************************************************************************
  * Bucle principal de `simplesh`
@@ -1289,6 +1336,9 @@ int main(int argc, char** argv)
 {
     char* buf;
     struct cmd* cmd;
+    
+    //Bloquea la señal SIGINT y ignora SIGQUIT
+    treat_signals();
 
     parse_args(argc, argv);
 
@@ -1299,9 +1349,6 @@ int main(int argc, char** argv)
         perror("unsetenv");
         exit(EXIT_FAILURE);
     }
-    
-    //Bloquea la señal SIGINT y ignora SIGQUIT
-    treat_signals();
 
     // Bucle de lectura y ejecución de órdenes
     while ((buf = get_cmd()) != NULL)
