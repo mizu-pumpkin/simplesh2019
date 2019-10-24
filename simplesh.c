@@ -24,17 +24,16 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <getopt.h>
+#include <libgen.h>     //para basename()
+#include <limits.h>     //para PATH_MAX
+#include <pwd.h>        //para getpwuid()
+#include <signal.h>     //para señales
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/wait.h>
 #include <unistd.h>
-
-#include <pwd.h>        //para getpwuid()
-#include <limits.h>     //para PATH_MAX
-#include <libgen.h>     //para otras cosas
-#include <signal.h>     //para señales
 
 // Biblioteca readline
 #include <readline/readline.h>
@@ -44,11 +43,6 @@
 /******************************************************************************
  * Constantes, macros y variables globales
  ******************************************************************************/
-
-// Comandos internos
-#define N_COMANDOS_INTERNOS 4
-
-char * comandos_internos[N_COMANDOS_INTERNOS] = {"cwd", "exit", "cd", "psplit"};
 
 
 static const char* VERSION = "0.19";
@@ -100,9 +94,43 @@ static const char WHITESPACE[] = " \t\r\n\v";
 static const char SYMBOLS[] = "<|>&;()";
 
 
+// Comandos internos
+#define N_INTERNALCMD 5
+char * comandos_internos[N_INTERNALCMD] = {"cwd", "exit", "cd", "psplit", "bjobs"};
+
+// Array de procesos en background
+#define MAX_BPROC 8
+pid_t bpids[MAX_BPROC];
+int bpids_i;
+
+
 /******************************************************************************
  * Funciones auxiliares
  ******************************************************************************/
+
+// Añade el pid al array de pids de procesos en background activos
+void add_to_bpids(pid_t pid)
+{
+    if (bpids_i < MAX_BPROC) {
+        bpids[bpids_i] = pid;
+        bpids_i++;
+    }
+}
+
+// Elimina el pid del array de pids de procesos en background activos
+void remove_from_bpids(pid_t pid)
+{
+    int i=0;
+    while (i<bpids_i && bpids[i]!=pid) i++;
+    while ((i+1)<bpids_i) {
+        bpids[i] = bpids[i+1];
+        i++;
+    }
+    if (i < MAX_BPROC) {
+        bpids[i] = -1;
+        bpids_i--;
+    }
+}
 
 
 // Imprime el mensaje
@@ -460,7 +488,7 @@ struct cmd* parse_redr(struct cmd*, char**, char*);
 struct cmd* null_terminate(struct cmd*);
 
 int check_internal(struct execcmd * ecmd);
-void run_internal(struct cmd * cmd, int command);
+void exec_internal(struct cmd * cmd, int command);
 void register_handler();
 
 
@@ -777,7 +805,7 @@ void exec_cmd(struct execcmd* ecmd)
 }
 
 
-//FIXME Modificar run_cmd() para que la ejecución de los comandos en segundo plano no interfiera con la de los comandos en primer plano
+//FIXME Modificar run_cmd() para que la ejecución de los comandos en segundo plano no interfiera con la de los comandos en primer plano -> cambiados todos los wait(NULL) por waitpid(pidhijo,0,0). Is this ok?
 void run_cmd(struct cmd* cmd)
 {
     struct execcmd* ecmd;
@@ -789,6 +817,7 @@ void run_cmd(struct cmd* cmd)
     int p[2];
     int fd;
     int interno = -1;
+    pid_t pidhijo, pidhijo2;
 
     DPRINTF(DBG_TRACE, "STR\n");
 
@@ -796,43 +825,41 @@ void run_cmd(struct cmd* cmd)
 
     switch(cmd->type)
     {
-        case EXEC:
+        case EXEC://FIXME
             ecmd = (struct execcmd*) cmd;
             interno = check_internal(ecmd);
             if (interno != -1)
-                run_internal(cmd, interno);
+                exec_internal(cmd, interno);
             else
             {
-                if (fork_or_panic("fork EXEC") == 0)
+                if ((pidhijo = fork_or_panic("fork EXEC")) == 0)
                     exec_cmd(ecmd);
-                //FIXME va qui il wait?
-                TRY( wait(NULL) );
+                TRY( waitpid(pidhijo,0,0) );
             }
             break;
 
         case REDR:
-            /*FIXME
-             *     simplesh > exit > salida
-             *    [ bash ]
-             *    # La salida de "exit" se redirige al fichero salida que se crea con tamaño cero.
-             *    # Se requiere el uso de llamadas para manipulación de descriptores de fichero.
+            /*TODO
+             *    cmd: "exit > salida"
+             *    out: [ bash ]
              *
-             *    test 10 bol 2: cd dir >> emptyfile ; cwd ; cat ../emptyfile
+             *    cmd: "cd validacion >> emptyfile ; cwd ; cat ../emptyfile"
+             *    "out": "^cwd: /home/mizu/UMU/3-1/aso/Prácticas/simplesh/validacion$"
              */
             rcmd = (struct redrcmd*) cmd;
-            if (fork_or_panic("fork REDR") == 0)
+            if ((pidhijo = fork_or_panic("fork REDR")) == 0)
             {
                 TRY( close(rcmd->fd) );
                 if ((fd = open(rcmd->file, rcmd->flags, rcmd->mode)) < 0)
                 {
-                    perror("open");
+                    perror("run_cmd: open");
                     exit(EXIT_FAILURE);
                 }
                 if (rcmd->cmd->type == EXEC) {
                     ecmd = (struct execcmd*) rcmd->cmd;
                     interno = check_internal(ecmd);
                     if (interno != -1) {
-                        run_internal(cmd, interno);
+                        exec_internal(rcmd->cmd, interno);
                     }
                     else
                         exec_cmd(ecmd);
@@ -840,7 +867,7 @@ void run_cmd(struct cmd* cmd)
                     run_cmd(rcmd->cmd);
                 exit(EXIT_SUCCESS);
             }
-            TRY( wait(NULL) );
+            TRY( waitpid(pidhijo,0,0) );
             break;
 
         case LIST:
@@ -853,12 +880,12 @@ void run_cmd(struct cmd* cmd)
             pcmd = (struct pipecmd*)cmd;
             if (pipe(p) < 0)
             {
-                perror("pipe");
+                perror("run_cmd: pipe");
                 exit(EXIT_FAILURE);
             }
 
             // Ejecución del hijo de la izquierda
-            if (fork_or_panic("fork PIPE left") == 0)
+            if ((pidhijo = fork_or_panic("fork PIPE left")) == 0)
             {
                 TRY( close(STDOUT_FILENO) );
                 TRY( dup(p[1]) );
@@ -868,7 +895,7 @@ void run_cmd(struct cmd* cmd)
                     ecmd = (struct execcmd*) pcmd->left;
                     interno = check_internal(ecmd);
                     if (interno != -1)
-                        run_internal(cmd, interno);
+                        exec_internal(pcmd->left, interno);
                     else
                         exec_cmd(ecmd);
                 } else
@@ -877,7 +904,7 @@ void run_cmd(struct cmd* cmd)
             }
 
             // Ejecución del hijo de la derecha
-            if (fork_or_panic("fork PIPE right") == 0)
+            if ((pidhijo2 = fork_or_panic("fork PIPE right")) == 0)
             {
                 TRY( close(STDIN_FILENO) );
                 TRY( dup(p[0]) );
@@ -887,7 +914,7 @@ void run_cmd(struct cmd* cmd)
                     ecmd = (struct execcmd*) pcmd->right;
                     interno = check_internal(ecmd);
                     if (interno != -1)
-                        run_internal(cmd, interno);
+                        exec_internal(pcmd->right, interno);
                     else
                         exec_cmd(ecmd);
                 } else
@@ -898,22 +925,20 @@ void run_cmd(struct cmd* cmd)
             TRY( close(p[1]) );
 
             // Esperar a ambos hijos
-            TRY( wait(NULL) );
-            TRY( wait(NULL) );  //FIXME ERROR: rc=-1 errno=10 (No child processes)
+            TRY( waitpid(pidhijo,0,0) );  //FIXME ERROR: rc=-1 errno=10 (No child processes)
+            TRY( waitpid(pidhijo2,0,0) );
             break;
 
         case BACK:
             bcmd = (struct backcmd*)cmd;
             register_handler();
-            if (fork_or_panic("fork BACK") == 0)
+            if ((pidhijo = fork_or_panic("fork BACK")) == 0)
             {
-                //FIXME Envía [PID] a stdout
-                printf("[%d]\n",getpid());
                 if (bcmd->cmd->type == EXEC) {
                     ecmd = (struct execcmd*) bcmd->cmd;
                     interno = check_internal(ecmd);
                     if (interno != -1)
-                        run_internal(cmd, interno);
+                        exec_internal(bcmd->cmd, interno);
                     else {
                         exec_cmd(ecmd);
                     }
@@ -921,16 +946,19 @@ void run_cmd(struct cmd* cmd)
                     run_cmd(bcmd->cmd);
                 exit(EXIT_SUCCESS);
             }
+            // Envía [PID] a stdout y lo añade a los pid de procesos en segundo plano activos
+            printf("[%d]\n",pidhijo);
+            add_to_bpids(pidhijo);
             break;
 
         case SUBS:
             scmd = (struct subscmd*) cmd;
-            if (fork_or_panic("fork SUBS") == 0)
+            if ((pidhijo = fork_or_panic("fork SUBS")) == 0)
             {
                 run_cmd(scmd->cmd);
                 exit(EXIT_SUCCESS);
             }
-            TRY( wait(NULL) );
+            TRY( waitpid(pidhijo,0,0) );
             break;
 
         case INV:
@@ -1099,7 +1127,7 @@ char* get_cmd()
 
     // Con respecto a los errores es necesario tratar los mostrados en la sección "errores" de los manuales de las funciones
     if (!passwd) {
-            perror("getpwuid");
+            perror("get_cmd: getpwuid");
             exit(EXIT_FAILURE);
     }
 
@@ -1108,7 +1136,7 @@ char* get_cmd()
     char path[PATH_MAX];        // Ruta absoluta en el que se encuentra el usuario
 
     if (!getcwd(path, PATH_MAX)) {
-        perror("getcwd");
+        perror("get_cmd: getcwd");
         exit(EXIT_FAILURE);
     }
 
@@ -1142,7 +1170,7 @@ int check_internal(struct execcmd * ecmd)
     if (!ecmd || !ecmd->argv[0])
         return -1;
     
-    for (int i=0; i<N_COMANDOS_INTERNOS; i++)
+    for (int i=0; i<N_INTERNALCMD; i++)
         if (!strcmp(ecmd->argv[0], comandos_internos[i]))
             return i;
     return -1;
@@ -1154,7 +1182,7 @@ void run_cwd(void)
     char path[PATH_MAX];
 
     if (!getcwd(path, PATH_MAX)) {
-        perror("getcwd");
+        perror("run_cwd: getcwd");
         exit(EXIT_FAILURE);
     }
 
@@ -1178,7 +1206,7 @@ void run_cd(struct execcmd * ecmd)
     {
         case 1:
             if (!(path = getenv("HOME"))) {
-                perror("getenv");
+                perror("run_cd: getenv");
                 exit(EXIT_FAILURE);
             }
             break;
@@ -1200,11 +1228,11 @@ void run_cd(struct execcmd * ecmd)
     
     char old_path[PATH_MAX];
     if (!getcwd(old_path, PATH_MAX)) {
-        perror("getcwd");
+        perror("run_cd: getcwd");
         exit(EXIT_FAILURE);
     }
     if (setenv("OLDPWD", old_path, 1)==-1) {
-        perror("setenv");
+        perror("run_cd: setenv");
         exit(EXIT_FAILURE);
     }
     
@@ -1212,25 +1240,74 @@ void run_cd(struct execcmd * ecmd)
         if (errno==ENOENT)
             printf("run_cd: No existe el directorio '%s'\n", path);
         else {
-            perror("chdir");
+            perror("run_cd: chdir");
             exit(EXIT_FAILURE);
         }
     }
 }
 
 
-void run_internal(struct cmd * cmd, int command)
+void help_bjobs()
 {
+    printf("Uso: bjobs [-k] [-h]\n\
+    Opciones:\n\
+    -k Mata todos los procesos en segundo plano.\n\
+    -h Ayuda\n\n");
+}
+
+
+void kill_bjobs()//FIXME dove uso sigaction e waitpid?
+{
+    for (int i=0; i < bpids_i; i++) {
+        if(kill(bpids[i], SIGKILL) == -1) {
+            perror("kill_bjobs: kill");
+            exit(EXIT_FAILURE);
+        }
+    }
+}
+
+
+void parse_bjobs(struct execcmd * ecmd)
+{
+    int option;
+    optind = 0; //FIXME con optind = 1; no funciona
+    
+    while((option = getopt(ecmd->argc, ecmd->argv, "kh")) != -1)
+    {
+        switch(option) {
+            case 'k':
+                kill_bjobs();
+                break;
+            case 'h':
+            default:
+                help_bjobs();
+                return;
+        }
+    }
+}
+
+
+void run_bjobs(struct execcmd * ecmd)
+{
+    if (ecmd->argc==1)
+        for (int i=0; i < bpids_i; i++)
+            printf("[%d]\n",bpids[i]);
+    else
+        parse_bjobs(ecmd);
+}
+
+
+void exec_internal(struct cmd * cmd, int command)
+{
+    struct execcmd* ecmd = (struct execcmd*) cmd;
+    
     switch(command) {
-        case 0:
-            run_cwd();
-            break;
-        case 1:
-            run_exit(cmd);
-            break;
-        case 2:
-            run_cd((struct execcmd*) cmd);
-            break;
+        case 0: run_cwd(); break;
+        case 1: run_exit(cmd); break;
+        case 2: run_cd(ecmd); break;
+        case 3: /*psplit()*/break;
+        case 4: run_bjobs(ecmd); break;
+        default: panic("no se encontró el comando '%s'\n", ecmd->argv[0]); break;
     }
 }
 
@@ -1241,28 +1318,28 @@ void run_internal(struct cmd * cmd, int command)
 
 
 void treat_signals()
-{
+{//FIXME
     sigset_t blockedsigset;
     //simplesh debe bloquear la señal SIGINT (CTRL+C)
     if (sigemptyset(&blockedsigset)==-1) {
-        perror("sigemptyset");
+        perror("treat_signals: sigemptyset");
         exit(EXIT_FAILURE);
     }
     if (sigaddset(&blockedsigset, SIGINT)==-1) {
-        perror("sigaddset");
+        perror("treat_signals: sigaddset");
         exit(EXIT_FAILURE);
     }
     if (sigprocmask(SIG_BLOCK, &blockedsigset, NULL)==-1) {
-        perror("sigprocmask");
+        perror("treat_signals: sigprocmask");
         exit(EXIT_FAILURE);
     }
     //simplesh debe ignorar la señal SIGQUIT (CTRL+\)
     struct sigaction sigact;
     sigact.sa_handler = SIG_IGN;
-    sigemptyset(&sigact.sa_mask);   //FIXME necesario?
-    sigact.sa_flags = 0;            //FIXME necesario?
+    sigemptyset(&sigact.sa_mask);
+    sigact.sa_flags = 0;
     if(sigaction(SIGQUIT, &sigact, NULL)==-1) {
-        perror("sigaction");
+        perror("treat_signals: sigaction");
         exit(EXIT_FAILURE);
     }
 }
@@ -1276,7 +1353,8 @@ void handle_sigchld(int sig)
     // Evita que los procesos creados para comandos en segundo plano se conviertan en procesos zombies al terminar
     while ((pid = waitpid((pid_t)(-1), 0, WNOHANG)) > 0) {
         // Envia [PID] a stdout cuando termina la ejecución de un proceso creado para un comando en segundo plano
-        printf("[%d]",pid);// FIXME 
+        remove_from_bpids(pid);
+        printf("[%d]",pid);
     }
     errno = saved_errno;
 }
@@ -1290,8 +1368,8 @@ void register_handler()
     sigemptyset(&sa.sa_mask);
     sa.sa_flags = SA_RESTART | SA_NOCLDSTOP;
     if (sigaction(SIGCHLD, &sa, 0) == -1) {
-        perror(0);
-        exit(1);
+        perror("register_handler: sigaction");
+        exit(EXIT_FAILURE);
     }
 }
 
@@ -1336,6 +1414,8 @@ int main(int argc, char** argv)
 {
     char* buf;
     struct cmd* cmd;
+    memset(bpids, -1, MAX_BPROC*sizeof(pid_t));
+    bpids_i = 0;
     
     //Bloquea la señal SIGINT y ignora SIGQUIT
     treat_signals();
@@ -1346,7 +1426,7 @@ int main(int argc, char** argv)
     
     //Elimina la variable de entorno OLDPWD
     if (unsetenv("OLDPWD") == -1) {
-        perror("unsetenv");
+        perror("main: unsetenv");
         exit(EXIT_FAILURE);
     }
 
