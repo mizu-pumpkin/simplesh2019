@@ -101,8 +101,8 @@ static const char SYMBOLS[] = "<|>&;()";
 
 
 // Comandos internos
-#define N_INTERNALCMD 5
-char * comandos_internos[N_INTERNALCMD] = {"cwd", "exit", "cd", "psplit", "bjobs"};
+#define N_INTERNAL 5
+char * internal_commands[N_INTERNAL] = {"cwd", "exit", "cd", "psplit", "bjobs"};
 
 // Array de procesos en background
 #define MAX_BPROC 8
@@ -117,29 +117,6 @@ int bpids_i;
  * Funciones auxiliares
  ******************************************************************************/
 
-// Añade el pid al array de pids de procesos en background activos
-void add_to_bpids(pid_t pid)
-{
-    if (bpids_i < MAX_BPROC) {
-        bpids[bpids_i] = pid;
-        bpids_i++;
-    }
-}
-
-// Elimina el pid del array de pids de procesos en background activos
-void remove_from_bpids(pid_t pid)
-{
-    int i=0;
-    while (i<bpids_i && bpids[i]!=pid) i++;
-    while ((i+1)<bpids_i) {
-        bpids[i] = bpids[i+1];
-        i++;
-    }
-    if (i < MAX_BPROC) {
-        bpids[i] = -1;
-        bpids_i--;
-    }
-}
 
 // Bloquea o desbloquea la señal SIGCHLD
 // Valores para how: SIG_BLOCK o SIG_UNBLOCK
@@ -150,6 +127,35 @@ void sigchld_inhibitor(int how)
     TRY (sigemptyset(&sigchldset));
     TRY (sigaddset(&sigchldset, SIGCHLD));
     TRY (sigprocmask(how, &sigchldset, NULL));
+}
+
+
+// Añade el pid al array de pids de procesos en background activos
+void add_to_bpids(pid_t pid)
+{
+    sigchld_inhibitor(SIG_BLOCK);
+    if (bpids_i < MAX_BPROC) {
+        bpids[bpids_i] = pid;
+        bpids_i++;
+    }
+    sigchld_inhibitor(SIG_UNBLOCK);
+}
+
+// Elimina el pid del array de pids de procesos en background activos
+void remove_from_bpids(pid_t pid)
+{
+    sigchld_inhibitor(SIG_BLOCK);
+    int i=0;
+    while (i < bpids_i && bpids[i] != pid) i++;
+    while ((i+1) < bpids_i) {
+        bpids[i] = bpids[i+1];
+        i++;
+    }
+    if (i < MAX_BPROC) {
+        bpids[i] = -1;
+        bpids_i--;
+    }
+    sigchld_inhibitor(SIG_UNBLOCK);
 }
 
 
@@ -515,7 +521,7 @@ struct cmd* parse_redr(struct cmd*, char**, char*);
 struct cmd* null_terminate(struct cmd*);
 
 int check_internal(struct cmd * cmd);
-void exec_internal(struct cmd * cmd, int command);
+int exec_internal(struct cmd * cmd, int command);
 void register_handler(void);
 
 
@@ -832,7 +838,7 @@ void exec_cmd(struct execcmd* ecmd)
 }
 
 
-void run_cmd(struct cmd* cmd)
+int run_cmd(struct cmd* cmd)
 {
     struct execcmd* ecmd;
     struct redrcmd* rcmd;
@@ -843,11 +849,12 @@ void run_cmd(struct cmd* cmd)
     int p[2];
     int fd, old_fd;
     int interno = -1;
+    int exit_on = 0;
     pid_t pidhijo, pidhijo2;
 
     DPRINTF(DBG_TRACE, "STR\n");
 
-    if(cmd == 0) return;
+    if(cmd == 0) return 0;
 
     switch(cmd->type)
     {
@@ -855,7 +862,7 @@ void run_cmd(struct cmd* cmd)
             ecmd = (struct execcmd*) cmd;
             interno = check_internal(cmd);
             if (interno != -1)
-                exec_internal(cmd, interno);
+                return exec_internal(cmd, interno);
             else
             {
                 sigchld_inhibitor(SIG_BLOCK);
@@ -878,9 +885,10 @@ void run_cmd(struct cmd* cmd)
                     perror("run_cmd: open");
                     exit(EXIT_FAILURE);
                 }
-                exec_internal(rcmd->cmd, interno);
+                exit_on = exec_internal(rcmd->cmd, interno);
                 TRY( dup2(old_fd, fd) );
                 TRY( close(old_fd) );
+                return exit_on;
             }
             else
             {
@@ -906,9 +914,9 @@ void run_cmd(struct cmd* cmd)
 
         case LIST:
             lcmd = (struct listcmd*) cmd;
-            //TODO
-            run_cmd(lcmd->left);
-            run_cmd(lcmd->right);
+            if ( run_cmd(lcmd->left) ||
+                 run_cmd(lcmd->right) )
+                return EXIT;
             break;
 
         case PIPE:
@@ -981,9 +989,7 @@ void run_cmd(struct cmd* cmd)
             }
             // Envía [PID] a stdout y lo añade a los pid de procesos en segundo plano activos
             printf("[%d]\n",pidhijo);
-            sigchld_inhibitor(SIG_BLOCK);
             add_to_bpids(pidhijo);
-            sigchld_inhibitor(SIG_UNBLOCK);
             break;
 
         case SUBS:
@@ -1004,6 +1010,7 @@ void run_cmd(struct cmd* cmd)
     }
 
     DPRINTF(DBG_TRACE, "END\n");
+    return 0;
 }
 
 
@@ -1212,8 +1219,8 @@ int check_internal(struct cmd * cmd)
     if (!ecmd->argv[0])
         return -1;
     
-    for (int i=0; i<N_INTERNALCMD; i++)
-        if (!strcmp(ecmd->argv[0], comandos_internos[i]))
+    for (int i = 0; i < N_INTERNAL; i++)
+        if (!strcmp(ecmd->argv[0], internal_commands[i]))
             return i;
     return -1;
 }
@@ -1232,11 +1239,9 @@ void run_cwd(void)
 }
 
 
-void run_exit(struct cmd * cmd)
+int run_exit(struct cmd * cmd)
 {
-    free_cmd(cmd);
-    free(cmd);
-    exit(EXIT_SUCCESS);
+    return EXIT;
 }
 
 
@@ -1273,13 +1278,13 @@ void run_cd(struct execcmd * ecmd)
         perror("run_cd: getcwd");
         exit(EXIT_FAILURE);
     }
-    if (setenv("OLDPWD", old_path, 1)==-1) {
+    if (setenv("OLDPWD", old_path, 1) == -1) {
         perror("run_cd: setenv");
         exit(EXIT_FAILURE);
     }
     
-    if (chdir(path)==-1) {//FIXME TRY
-        if (errno==ENOENT)
+    if (chdir(path) == -1) {
+        if (errno == ENOENT)
             printf("run_cd: No existe el directorio '%s'\n", path);
         else {
             perror("run_cd: chdir");
@@ -1530,7 +1535,7 @@ void parse_bjobs(struct execcmd * ecmd)
         switch(option) {
             case 'k':
                 sigchld_inhibitor(SIG_BLOCK);
-                for (int i=0; i < bpids_i; i++)
+                for (int i = 0; i < bpids_i; i++)
                     TRY ( kill(bpids[i], SIGKILL) );    //FIXME SIGTERM?
                 sigchld_inhibitor(SIG_UNBLOCK);
                 break;
@@ -1545,9 +1550,9 @@ void parse_bjobs(struct execcmd * ecmd)
 
 void run_bjobs(struct execcmd * ecmd)
 {
-    if (ecmd->argc==1) {
+    if (ecmd->argc == 1) {
         sigchld_inhibitor(SIG_BLOCK);
-        for (int i=0; i < bpids_i; i++)
+        for (int i = 0; i < bpids_i; i++)
             printf("[%d]\n",bpids[i]);
         sigchld_inhibitor(SIG_UNBLOCK);
     }
@@ -1556,18 +1561,19 @@ void run_bjobs(struct execcmd * ecmd)
 }
 
 
-void exec_internal(struct cmd * cmd, int command)
+int exec_internal(struct cmd * cmd, int command)
 {
     struct execcmd* ecmd = (struct execcmd*) cmd;
     
     switch(command) {
         case 0: run_cwd(); break;
-        case 1: run_exit(cmd); break;
+        case 1: return run_exit(cmd); break;
         case 2: run_cd(ecmd); break;
         case 3: run_psplit(ecmd->argv, ecmd->argc); break;
         case 4: run_bjobs(ecmd); break;
         default: panic("no se encontró el comando '%s'\n", ecmd->argv[0]); break;
     }
+    return 0;
 }
 
 
@@ -1599,9 +1605,9 @@ void handle_sigchld(int sig)
     pid_t pid;
     // Evita que los procesos creados para comandos en segundo plano se conviertan en procesos zombies al terminar
     while ((pid = waitpid((pid_t)(-1), 0, WNOHANG)) > 0) {
-        // Envia [PID] a stdout cuando termina la ejecución de un proceso creado para un comando en segundo plano
         remove_from_bpids(pid);
-        printf("[%d]",pid);//FIXME usa write(STDOUT_FILENO,etc)
+        // Envia [PID] a stdout cuando termina la ejecución de un proceso creado para un comando en segundo plano
+        //printf("[%d]",pid);//TODO usa write(STDOUT_FILENO,etc)
     }
     errno = saved_errno;
 }
@@ -1658,6 +1664,7 @@ int main(int argc, char** argv)
 {
     char* buf;
     struct cmd* cmd;
+    int exit_on = 0;
     memset(bpids, -1, MAX_BPROC*sizeof(pid_t));
     bpids_i = 0;
     
@@ -1676,7 +1683,7 @@ int main(int argc, char** argv)
     }
 
     // Bucle de lectura y ejecución de órdenes
-    while ((buf = get_cmd()) != NULL)
+    while (!exit_on && (buf = get_cmd()) != NULL)
     {
         // Realiza el análisis sintáctico de la línea de órdenes
         cmd = parse_cmd(buf);
@@ -1690,7 +1697,7 @@ int main(int argc, char** argv)
             print_cmd(cmd); printf("\n"); fflush(NULL); } );
 
         // Ejecuta la línea de órdenes
-        run_cmd(cmd);
+        exit_on = run_cmd(cmd);
 
         // Libera la memoria de las estructuras `cmd`
         free_cmd(cmd);
