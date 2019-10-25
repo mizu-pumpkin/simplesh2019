@@ -24,6 +24,10 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <getopt.h>
+#include <libgen.h>     //para basename()
+#include <limits.h>     //para PATH_MAX
+#include <pwd.h>        //para getpwuid()
+#include <signal.h>     //para señales
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -43,6 +47,12 @@
 /******************************************************************************
  * Constantes, macros y variables globales
  ******************************************************************************/
+
+
+#define NUMERO_INTERNOS 4
+#define DEFAULT_BSIZE 1024
+#define DEFAULT_PROCS 1
+#define MAX_BSIZE 1048576
 
 
 static const char* VERSION = "0.19";
@@ -94,9 +104,83 @@ static const char WHITESPACE[] = " \t\r\n\v";
 static const char SYMBOLS[] = "<|>&;()";
 
 
+// Comandos internos
+#define N_INTERNAL 5
+char * internal_commands[N_INTERNAL] = {"cwd", "exit", "cd", "psplit", "bjobs"};
+
+// Array de procesos en background
+#define MAX_BPROC 8
+pid_t bpids[MAX_BPROC];
+int bpids_i;
+
+// Código de retorno de exit
+#define EXIT 1
+
+
 /******************************************************************************
  * Funciones auxiliares
  ******************************************************************************/
+
+
+// Bloquea o desbloquea la señal SIGCHLD
+// Valores para how: SIG_BLOCK o SIG_UNBLOCK
+void sigchld_inhibitor(int how)
+{    
+    sigset_t sigchldset;
+    
+    TRY (sigemptyset(&sigchldset));
+    TRY (sigaddset(&sigchldset, SIGCHLD));
+    TRY (sigprocmask(how, &sigchldset, NULL));
+}
+
+
+// Añade el pid al array de pids de procesos en background activos
+void add_to_bpids(pid_t pid)
+{
+    sigchld_inhibitor(SIG_BLOCK);
+    if (bpids_i < MAX_BPROC) {
+        bpids[bpids_i] = pid;
+        bpids_i++;
+    }
+    sigchld_inhibitor(SIG_UNBLOCK);
+}
+
+// Elimina el pid del array de pids de procesos en background activos
+void remove_from_bpids(pid_t pid)
+{
+    sigchld_inhibitor(SIG_BLOCK);
+    int i=0;
+    while (i < bpids_i && bpids[i] != pid) i++;
+    while ((i+1) < bpids_i) {
+        bpids[i] = bpids[i+1];
+        i++;
+    }
+    if (i < MAX_BPROC) {
+        bpids[i] = -1;
+        bpids_i--;
+    }
+    sigchld_inhibitor(SIG_UNBLOCK);
+}
+
+// Devuelve el número de dígitos del pid
+int get_pidlen(pid_t pid)
+{
+    int pidlen = 0;
+    
+    while (pid > 0) {
+        pid /= 10;
+        pidlen ++;
+    }
+    
+    return pidlen;
+}
+
+// Devuelve el menor entre dos enteros
+int min(int a, int b)
+{
+    if (a < b) return a;
+    else return b;
+}
 
 
 // Imprime el mensaje
@@ -453,6 +537,10 @@ struct cmd* parse_subs(char**, char*);
 struct cmd* parse_redr(struct cmd*, char**, char*);
 struct cmd* null_terminate(struct cmd*);
 
+int check_internal(struct cmd * cmd);
+int exec_internal(struct cmd * cmd, int command);
+void register_handler(void);
+
 
 // `parse_cmd` realiza el *análisis sintáctico* de la línea de órdenes
 // introducida por el usuario.
@@ -676,13 +764,13 @@ struct cmd* parse_redr(struct cmd* cmd, char** start_of_str, char* end_of_str)
         switch(delimiter)
         {
             case '<':
-                cmd = redrcmd(cmd, start_of_token, end_of_token, O_RDONLY, 0, STDIN_FILENO);
+                cmd = redrcmd(cmd, start_of_token, end_of_token, O_RDONLY, S_IRWXU, STDIN_FILENO);
                 break;
             case '>':
-                cmd = redrcmd(cmd, start_of_token, end_of_token, O_RDWR|O_CREAT, 0, STDOUT_FILENO);
+                cmd = redrcmd(cmd, start_of_token, end_of_token, O_WRONLY|O_CREAT|O_TRUNC, S_IRWXU, STDOUT_FILENO);
                 break;
             case '+': // >>
-                cmd = redrcmd(cmd, start_of_token, end_of_token, O_RDWR|O_CREAT, 0, STDOUT_FILENO);
+                cmd = redrcmd(cmd, start_of_token, end_of_token, O_WRONLY|O_CREAT|O_APPEND, S_IRWXU, STDOUT_FILENO);
                 break;
         }
     }
@@ -767,7 +855,7 @@ void exec_cmd(struct execcmd* ecmd)
 }
 
 
-void run_cmd(struct cmd* cmd)
+int run_cmd(struct cmd* cmd)
 {
     struct execcmd* ecmd;
     struct redrcmd* rcmd;
@@ -776,79 +864,119 @@ void run_cmd(struct cmd* cmd)
     struct backcmd* bcmd;
     struct subscmd* scmd;
     int p[2];
-    int fd;
+    int fd, old_fd;
+    int interno = -1;
+    int exit_on = 0;
+    pid_t pidhijo, pidhijo2;
 
     DPRINTF(DBG_TRACE, "STR\n");
 
-    if(cmd == 0) return;
+    if(cmd == 0) return 0;
 
     switch(cmd->type)
     {
         case EXEC:
             ecmd = (struct execcmd*) cmd;
-            if (fork_or_panic("fork EXEC") == 0)
-                exec_cmd(ecmd);
-            TRY( wait(NULL) );
+            interno = check_internal(cmd);
+            if (interno != -1)
+                return exec_internal(cmd, interno);
+            else
+            {
+                sigchld_inhibitor(SIG_BLOCK);
+                if ((pidhijo = fork_or_panic("fork EXEC")) == 0)
+                    exec_cmd(ecmd);
+                TRY( waitpid(pidhijo,0,0) );
+                sigchld_inhibitor(SIG_UNBLOCK);
+            }
             break;
 
         case REDR:
             rcmd = (struct redrcmd*) cmd;
-            if (fork_or_panic("fork REDR") == 0)
+            interno = check_internal(rcmd->cmd);
+            if (interno != -1)
             {
+                TRY ( old_fd = dup(rcmd->fd) );
                 TRY( close(rcmd->fd) );
-                if ((fd = open(rcmd->file, rcmd->flags)) < 0)
+                if ((fd = open(rcmd->file, rcmd->flags, rcmd->mode)) < 0)
                 {
-                    perror("open");
+                    perror("run_cmd: open");
                     exit(EXIT_FAILURE);
                 }
-
-                if (rcmd->cmd->type == EXEC)
-                    exec_cmd((struct execcmd*) rcmd->cmd);
-                else
-                    run_cmd(rcmd->cmd);
-                exit(EXIT_SUCCESS);
+                exit_on = exec_internal(rcmd->cmd, interno);
+                TRY( dup2(old_fd, fd) );
+                TRY( close(old_fd) );
+                return exit_on;
             }
-            TRY( wait(NULL) );
+            else
+            {
+                sigchld_inhibitor(SIG_BLOCK);
+                if ((pidhijo = fork_or_panic("fork REDR")) == 0)
+                {
+                    TRY( close(rcmd->fd) );
+                    if ((fd = open(rcmd->file, rcmd->flags, rcmd->mode)) < 0)
+                    {
+                        perror("run_cmd: open");
+                        exit(EXIT_FAILURE);
+                    }
+                    if (rcmd->cmd->type == EXEC)
+                        exec_cmd((struct execcmd*) rcmd->cmd);
+                    else
+                        run_cmd(rcmd->cmd);
+                    exit(EXIT_SUCCESS);
+                }
+                TRY( waitpid(pidhijo,0,0) );
+                sigchld_inhibitor(SIG_UNBLOCK);
+            }
             break;
 
         case LIST:
             lcmd = (struct listcmd*) cmd;
-            run_cmd(lcmd->left);
-            run_cmd(lcmd->right);
+            if ( run_cmd(lcmd->left) ||
+                 run_cmd(lcmd->right) )
+                return EXIT;
             break;
 
         case PIPE:
             pcmd = (struct pipecmd*)cmd;
             if (pipe(p) < 0)
             {
-                perror("pipe");
+                perror("run_cmd: pipe");
                 exit(EXIT_FAILURE);
             }
 
+            sigchld_inhibitor(SIG_BLOCK);
             // Ejecución del hijo de la izquierda
-            if (fork_or_panic("fork PIPE left") == 0)
+            if ((pidhijo = fork_or_panic("fork PIPE left")) == 0)
             {
                 TRY( close(STDOUT_FILENO) );
                 TRY( dup(p[1]) );
                 TRY( close(p[0]) );
                 TRY( close(p[1]) );
-                if (pcmd->left->type == EXEC)
-                    exec_cmd((struct execcmd*) pcmd->left);
-                else
+                if (pcmd->left->type == EXEC) {
+                    interno = check_internal(pcmd->left);
+                    if (interno != -1)
+                        exec_internal(pcmd->left, interno);
+                    else
+                        exec_cmd((struct execcmd*) pcmd->left);
+                } else
                     run_cmd(pcmd->left);
                 exit(EXIT_SUCCESS);
             }
 
             // Ejecución del hijo de la derecha
-            if (fork_or_panic("fork PIPE right") == 0)
+            if ((pidhijo2 = fork_or_panic("fork PIPE right")) == 0)
             {
                 TRY( close(STDIN_FILENO) );
                 TRY( dup(p[0]) );
                 TRY( close(p[0]) );
                 TRY( close(p[1]) );
-                if (pcmd->right->type == EXEC)
-                    exec_cmd((struct execcmd*) pcmd->right);
-                else
+                if (pcmd->right->type == EXEC) {
+                    interno = check_internal(pcmd->right);
+                    if (interno != -1)
+                        exec_internal(pcmd->right, interno);
+                    else
+                        exec_cmd((struct execcmd*) pcmd->right);
+                } else
                     run_cmd(pcmd->right);
                 exit(EXIT_SUCCESS);
             }
@@ -856,30 +984,41 @@ void run_cmd(struct cmd* cmd)
             TRY( close(p[1]) );
 
             // Esperar a ambos hijos
-            TRY( wait(NULL) );
-            TRY( wait(NULL) );
+            TRY( waitpid(pidhijo,0,0) );
+            TRY( waitpid(pidhijo2,0,0) );
+            sigchld_inhibitor(SIG_UNBLOCK);
             break;
 
         case BACK:
             bcmd = (struct backcmd*)cmd;
-            if (fork_or_panic("fork BACK") == 0)
+            if ((pidhijo = fork_or_panic("fork BACK")) == 0)
             {
-                if (bcmd->cmd->type == EXEC)
-                    exec_cmd((struct execcmd*) bcmd->cmd);
-                else
+                if (bcmd->cmd->type == EXEC) {
+                    interno = check_internal(bcmd->cmd);
+                    if (interno != -1)
+                        exec_internal(bcmd->cmd, interno);
+                    else {
+                        exec_cmd((struct execcmd*) bcmd->cmd);
+                    }
+                } else
                     run_cmd(bcmd->cmd);
                 exit(EXIT_SUCCESS);
             }
+            // Envía [PID] a stdout y lo añade a los pid de procesos en segundo plano activos
+            printf("[%d]\n",pidhijo);
+            add_to_bpids(pidhijo);
             break;
 
         case SUBS:
             scmd = (struct subscmd*) cmd;
-            if (fork_or_panic("fork SUBS") == 0)
+            sigchld_inhibitor(SIG_BLOCK);
+            if ((pidhijo = fork_or_panic("fork SUBS")) == 0)
             {
                 run_cmd(scmd->cmd);
                 exit(EXIT_SUCCESS);
             }
-            TRY( wait(NULL) );
+            TRY( waitpid(pidhijo,0,0) );
+            sigchld_inhibitor(SIG_UNBLOCK);
             break;
 
         case INV:
@@ -888,6 +1027,7 @@ void run_cmd(struct cmd* cmd)
     }
 
     DPRINTF(DBG_TRACE, "END\n");
+    return 0;
 }
 
 
@@ -1043,16 +1183,479 @@ void free_cmd(struct cmd* cmd)
 
 char* get_cmd()
 {
+    uid_t uid = getuid(); // Obtiene el uid
+    struct passwd * passwd = getpwuid(uid); // Obtiene una entrada del fichero de cuentas del usuario
+
+    // Con respecto a los errores es necesario tratar los mostrados en la sección "errores" de los manuales de las funciones
+    if (!passwd) {
+        perror("get_cmd: getpwuid");
+        exit(EXIT_FAILURE);
+    }
+
+    char * user = passwd->pw_name; // Nombre del usuario sacado de la entrada
+
+    char path[PATH_MAX];        // Ruta absoluta en el que se encuentra el usuario
+
+    if (!getcwd(path, PATH_MAX)) {
+        perror("get_cmd: getcwd");
+        exit(EXIT_FAILURE);
+    }
+
+    char * dir = basename(path); // Directorio en el que estamos sin la ruta absoluta
+
+    char prompt[strlen(user) + strlen(dir) + 4]; // Reservar el espacio para el prompt
+    // + 4 por el arroba, el mayor que, el espacio y el valor nulo
+
+    sprintf(prompt, "%s@%s> ", user, dir); // Almacena en el buffer la cadena del prompt
+
     char* buf;
 
     // Lee la orden tecleada por el usuario
-    buf = readline("simplesh> ");
+    buf = readline(prompt);
 
     // Si el usuario ha escrito una orden, almacenarla en la historia.
     if(buf)
         add_history(buf);
 
     return buf;
+}
+
+
+/*****************************************************************************
+ * Comandos internos
+ * ***************************************************************************/
+
+
+int check_internal(struct cmd * cmd)
+{
+    if (!cmd || cmd->type != EXEC)
+        return -1;
+    
+    struct execcmd * ecmd = (struct execcmd*) cmd;
+    
+    if (!ecmd->argv[0])
+        return -1;
+    
+    for (int i = 0; i < N_INTERNAL; i++)
+        if (!strcmp(ecmd->argv[0], internal_commands[i]))
+            return i;
+    return -1;
+}
+
+
+void run_cwd(void)
+{
+    char path[PATH_MAX];
+
+    if (!getcwd(path, PATH_MAX)) {
+        perror("run_cwd: getcwd");
+        exit(EXIT_FAILURE);
+    }
+
+    printf("cwd: %s\n", path);
+}
+
+
+int run_exit(struct cmd * cmd)
+{
+    return EXIT;
+}
+
+
+void run_cd(struct execcmd * ecmd)
+{
+    char * path;
+    
+    switch(ecmd->argc)
+    {
+        case 1:
+            if (!(path = getenv("HOME"))) {
+                perror("run_cd: getenv");
+                exit(EXIT_FAILURE);
+            }
+            break;
+        case 2:
+            if (!strcmp(ecmd->argv[1], "-"))
+            {
+                if (!(path = getenv("OLDPWD"))) {
+                    printf("run_cd: Variable OLDPWD no definida\n");
+                    return;
+                }
+            }
+            else
+                path = ecmd->argv[1];
+            break;
+        default:
+            printf("run_cd: Demasiados argumentos\n");
+            return;
+    }
+    
+    char old_path[PATH_MAX];
+    if (!getcwd(old_path, PATH_MAX)) {
+        perror("run_cd: getcwd");
+        exit(EXIT_FAILURE);
+    }
+    if (setenv("OLDPWD", old_path, 1) == -1) {
+        perror("run_cd: setenv");
+        exit(EXIT_FAILURE);
+    }
+    
+    if (chdir(path) == -1) {
+        if (errno == ENOENT)
+            printf("run_cd: No existe el directorio '%s'\n", path);
+        else {
+            perror("run_cd: chdir");
+            exit(EXIT_FAILURE);
+        }
+    }
+}
+
+
+void help_psplit(void)
+{
+    printf("Uso: psplit [-l NLINES] [-b NBYTES] [-s BSIZE] [-p PROCS] [FILE1] [FILE2]...\n\
+            Opciones:\n\
+            -l NLINES Número máximo de líneas por fichero.\n\
+            -b NBYTES Número máximo de bytes por fichero.\n\
+            -s BSIZE  Tamaño en bytes de los bloques leídos de [FILEn] o stdin.\n\
+            -p PROCS  Número máximo de procesos simultáneos.\n\
+            -h        Ayuda\n");
+}
+
+
+void run_psplit(char * argv[], int argc)
+{//TODO 
+    int modo = 0;                  // Modo escogido para el procesado:
+                                   //     modo = 0   Sin definir
+                                   //     modo = 1   Líneas
+                                   //     modo = 2   Bytes
+
+    int nlines = 1;                // Nº de líneas a escribir por fichero.
+    int nbytes = 1;                // Nº de bytes a escribir por fichero.
+    size_t bsize = DEFAULT_BSIZE;  // Tamaño de bloque leído.
+    int procs = DEFAULT_PROCS;     // Nº de procesos simultáneos.
+    int fd = 0;                    // Variable para guardar temporalmente el descriptor del fichero.
+    int * files = NULL;            // Vector de descriptores de fichero.
+    int files_size = 0;            // Tamaño del vector anterior.
+    char * buf = NULL;             // Buffer en el que insertar temporalmente los datos.
+    ssize_t size_readed = 0;       // Tamaño leído por un read()
+                                   //     size_readed <= bsize
+    int n;                         // Nº de fichero copiado.
+    char str[256];                 // Nombre del fichero copiado.
+    int size_written;              // Tamaño escrito por el momento en el fichero.
+    int size_extracted;            // Tamaño extraído por el momento del buffer.
+    int size_chosen;
+
+    int lines_written;
+    int lines_found;
+
+    int opt = 0;
+    optind = 1;
+
+    while ((opt = getopt(argc, argv, "hl:b:s:p:")) != -1) {
+        switch (opt) {
+        case 'l':
+        if (modo == 0) {    
+            nlines = atoi(optarg);
+            modo = 1;
+        }
+        else {
+            printf("psplit: Opciones incompatibles\n");
+            return;
+        }
+            break;
+        case 'b':
+        if (modo == 0) {
+            nbytes = atoi(optarg);
+            modo = 2;
+        }
+        else {
+            printf("psplit: Opciones incompatibles\n");
+            return;
+        }
+        break;
+        case 's':
+        bsize = atoi(optarg);
+        if ((bsize < 1) || (bsize > MAX_BSIZE)) {
+            printf("psplit: El tamaño de bloque debe estar comprendido entre 1 B y 1 MB\n");
+            return;
+        }
+        break;
+        case 'p':
+                procs = atoi(optarg);
+        if (procs <= 0) {
+            printf("psplit: El número de procesos debe ser superior a cero\n");
+            return;
+        }
+        break;
+        case 'h':
+        help_psplit();
+        return;
+        break;
+        default:
+        return;
+        break;
+    }
+    }
+
+    // Comprobamos que haya un criterio.
+    if (modo == 0) {
+        printf("psplit: Es necesario especificar un criterio de escritura, ya sea por líneas o por bytes.\n");
+    return;
+    }
+
+    // Reservamos memoria para el buffer.
+    buf = malloc(bsize * sizeof(char));
+    // Inicializamos las cuenta para las escrituras.
+    size_written = 0;
+    size_extracted = 0;
+   
+    // No hay ningún fichero como parámetro.
+    if (optind == argc) {
+    files_size = 1;
+        files = malloc(files_size * sizeof(int));
+    files[0] = 0;
+    }
+    // Sí hay ficheros como parámetros.
+    else {
+    files_size = argc - optind;
+    files = malloc(files_size * sizeof(int));
+        for (int i = 0; i < files_size; i++) {
+        if ((fd = open(argv[optind + i], O_RDONLY, S_IRWXU)) == -1) {
+            perror("open");
+        exit(EXIT_FAILURE);
+        }
+        files[i] = fd;
+    }
+    }
+
+    // Criterio por líneas.
+    if (modo == 1) {
+        for (int i = 0; i < files_size; i++) {
+        n = 0;
+        fd = -1;
+        lines_written = 0;
+        size_extracted = 0;
+        lines_found = 0;
+        while (1) {
+            buf -= size_extracted;
+        size_extracted = 0;
+        TRY( size_readed = read(files[i], buf, bsize) );
+        if (size_readed == 0) {
+            if (fd != -1) {
+                TRY( fsync(fd) );
+            TRY( close(fd) );
+            }
+            break;
+        }
+                if (fd == -1) {
+                    sprintf(str, "%s%d", argv[optind + i], n);
+                    n++;
+                    TRY( fd = open(str, O_WRONLY|O_CREAT|O_TRUNC, S_IRWXU) );
+                }
+                while (size_extracted < size_readed) {
+            if (lines_written == nlines) {
+                TRY( fsync(fd) );
+            TRY( close(fd) );
+            lines_written = 0;
+            sprintf(str, "%s%d", argv[optind + i], n);
+                        n++;
+                        TRY( fd = open(str, O_WRONLY|O_CREAT|O_TRUNC, S_IRWXU) );
+            }
+            else {
+                while ((size_extracted != size_readed) && ((nlines - (lines_written + lines_found)) != 0)) {
+                            if (buf[size_extracted] == '\n')
+                    lines_found++;
+                size_extracted++;
+            }
+            size_extracted--;
+                        TRY( write(fd, buf, size_extracted) );
+            lines_written += lines_found;
+            buf += size_extracted;
+            }
+        }
+        }
+    }
+    }
+    // Criterio por bytes.
+    else if (modo == 2) {
+    // Bucle que itera cada fichero.
+        for (int i = 0; i < files_size; i++) {
+            n = 0;
+        fd = -1;
+        size_written = 0;
+        size_extracted = 0;
+        while (1) {
+        buf -= size_extracted;
+        size_extracted = 0;
+                TRY( size_readed = read(files[i], buf, bsize) );
+        if (size_readed == 0) {
+            if (fd != -1) {
+                TRY( fsync(fd) );
+            TRY( close(fd) );
+            }
+            break;
+        }
+        if (fd == -1) {
+            sprintf(str, "%s%d", argv[optind + i], n);
+            n++;
+            TRY( fd = open(str, O_WRONLY|O_CREAT|O_TRUNC, S_IRWXU) );
+        }
+        while (size_extracted < size_readed) {
+            if (size_written == nbytes) {
+                TRY( fsync(fd) );
+            TRY( close(fd) );
+            size_written = 0;
+            sprintf(str, "%s%d", argv[optind + i], n);
+            n++;
+            TRY( fd = open(str, O_WRONLY|O_CREAT|O_TRUNC, S_IRWXU) );
+            }
+            else {
+            size_chosen = min(nbytes - size_written, size_readed - size_extracted); 
+                    TRY( write(fd, buf, size_chosen) );
+                        size_written += size_chosen;
+            size_extracted += size_chosen;
+            buf += size_chosen;
+            }
+        }
+        }
+    }
+    }
+
+    // Cerramos los ficheros abiertos.
+    if (optind != argc)
+        for (int i = 0; i < files_size; i++)
+            TRY( close(files[i]) );
+    
+    // Liberamos la memoria reservada.
+    free(files);
+    free(buf);
+}
+
+
+void help_bjobs(void)
+{
+    printf("Uso: bjobs [-k] [-h]\n\
+    Opciones:\n\
+    -k Mata todos los procesos en segundo plano.\n\
+    -h Ayuda\n\n");
+}
+
+
+void parse_bjobs(struct execcmd * ecmd)
+{
+    int option;
+    optind = 0;
+    
+    while((option = getopt(ecmd->argc, ecmd->argv, "kh")) != -1)
+    {
+        switch(option) {
+            case 'k':
+                sigchld_inhibitor(SIG_BLOCK);
+                for (int i = 0; i < bpids_i; i++)
+                    TRY ( kill(bpids[i], SIGKILL) );    //FIXME SIGTERM?
+                sigchld_inhibitor(SIG_UNBLOCK);
+                break;
+            case 'h':
+            default:
+                help_bjobs();
+                return;
+        }
+    }
+}
+
+
+void run_bjobs(struct execcmd * ecmd)
+{
+    if (ecmd->argc == 1) {
+        sigchld_inhibitor(SIG_BLOCK);
+        for (int i = 0; i < bpids_i; i++)
+            printf("[%d]\n",bpids[i]);
+        sigchld_inhibitor(SIG_UNBLOCK);
+    }
+    else
+        parse_bjobs(ecmd);
+}
+
+
+int exec_internal(struct cmd * cmd, int command)
+{
+    struct execcmd* ecmd = (struct execcmd*) cmd;
+    
+    switch(command) {
+        case 0: run_cwd(); break;
+        case 1: return run_exit(cmd); break;
+        case 2: run_cd(ecmd); break;
+        case 3: run_psplit(ecmd->argv, ecmd->argc); break;
+        case 4: run_bjobs(ecmd); break;
+        default: panic("no se encontró el comando '%s'\n", ecmd->argv[0]); break;
+    }
+    return 0;
+}
+
+
+/*****************************************************************************
+ * Señales
+ * ***************************************************************************/
+
+
+void treat_signals(void)
+{
+    sigset_t blockedsigset;
+    //simplesh debe bloquear la señal SIGINT (CTRL+C)
+    TRY ( sigemptyset(&blockedsigset) );
+    TRY ( sigaddset(&blockedsigset, SIGINT) );
+    TRY ( sigprocmask(SIG_BLOCK, &blockedsigset, NULL) );
+    //simplesh debe ignorar la señal SIGQUIT (CTRL+\)
+    struct sigaction sigact;
+    sigact.sa_handler = SIG_IGN;
+    sigemptyset(&sigact.sa_mask);
+    sigact.sa_flags = 0;
+    TRY ( sigaction(SIGQUIT, &sigact, NULL) );
+}
+
+
+// Manejador de señales para la señal SIGCHLD
+void handle_sigchld(int sig)
+{
+    int saved_errno = errno;
+    pid_t pid;
+    int buflen, w , res;
+    // Evita que los procesos creados para comandos en segundo plano se conviertan en procesos zombies al terminar
+    while ((pid = waitpid((pid_t)(-1), 0, WNOHANG)) > 0) {
+        remove_from_bpids(pid);
+        // Se crea el buffer que hay que pasar a write()
+        buflen = get_pidlen(pid) + 2;
+        char buf[buflen * sizeof(char)];
+        
+        buf[0] = '[';
+        for (int i = buflen-2; i > 0; i--) {
+            buf[i] = (char)(pid % 10) + '0';
+            pid /= 10;
+        }
+        buf[buflen-1] = ']';
+        // Envia [PID] a stdout cuando termina la ejecución de un proceso creado para un comando en segundo plano
+        w = 0;
+        while ((res = write(STDOUT_FILENO,&buf[w],buflen)) < buflen) {
+            if (res == -1) {
+                perror("handle_sigchld: write");
+                exit(EXIT_FAILURE);
+            }
+            w++;
+        }
+    }
+    errno = saved_errno;
+}
+
+
+// You should do this before any child processes terminate, which in practice means registering before any are spawned
+void register_handler(void)
+{
+    struct sigaction sa;
+    sa.sa_handler = &handle_sigchld;
+    sigemptyset(&sa.sa_mask);
+    sa.sa_flags = SA_RESTART | SA_NOCLDSTOP;
+    TRY (sigaction(SIGCHLD, &sa, 0) );
 }
 
 
@@ -1096,13 +1699,26 @@ int main(int argc, char** argv)
 {
     char* buf;
     struct cmd* cmd;
+    int exit_on = 0;
+    memset(bpids, -1, MAX_BPROC*sizeof(pid_t));
+    bpids_i = 0;
+    
+    //Bloquea la señal SIGINT y ignora SIGQUIT
+    treat_signals();
+    register_handler();
 
     parse_args(argc, argv);
 
     DPRINTF(DBG_TRACE, "STR\n");
+    
+    //Elimina la variable de entorno OLDPWD
+    if (unsetenv("OLDPWD") == -1) {
+        perror("main: unsetenv");
+        exit(EXIT_FAILURE);
+    }
 
     // Bucle de lectura y ejecución de órdenes
-    while ((buf = get_cmd()) != NULL)
+    while (!exit_on && (buf = get_cmd()) != NULL)
     {
         // Realiza el análisis sintáctico de la línea de órdenes
         cmd = parse_cmd(buf);
@@ -1116,10 +1732,11 @@ int main(int argc, char** argv)
             print_cmd(cmd); printf("\n"); fflush(NULL); } );
 
         // Ejecuta la línea de órdenes
-        run_cmd(cmd);
+        exit_on = run_cmd(cmd);
 
         // Libera la memoria de las estructuras `cmd`
         free_cmd(cmd);
+        free(cmd);
 
         // Libera la memoria de la línea de órdenes
         free(buf);

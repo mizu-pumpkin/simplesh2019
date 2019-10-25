@@ -1,0 +1,70 @@
+____________________________________________________________
+
+EJERCICIO 1: Tratamiento de las señales SIGINT y SIGQUIT:
+    simplesh debe bloquear la señal SIGINT (CTRL+C)
+    simplesh debe ignorar la señal SIGQUIT (CTRL+\)
+Para ello, únicamente se pueden usar llamadas al sistema POSIX o funciones de la biblioteca estándar de C (C11).
+Llamadas POSIX y/o glibc a considerar:
+    sigemptyset()
+    sigaddset()
+    sigprocmask()
+    sigaction()
+____________________________________________________________
+
+EJERCICIO 2: Identifica y soluciona las deficiencias en la
+implementación de los comandos en segundo plano en simplesh.
+    simplesh > sleep 1 &
+    /* Se muestra de nuevo el prompt inmediatamente */
+    simplesh > ls
+    simplesh > Makefile simplesh simplesh . c simplesh . o
+    /* No se muestra el prompt tras el listado de ficheros */
+La ejecución de comandos en segundo plano no debe interferir con la ejecución de los comandos en primer plano en ningún caso.
+Cuando un comando en segundo plano se ejecuta o cuando termina, se debe enviar su [PID] a stdout.
+Cuando un comando en segundo plano termina, simplesh debe evitar que se convierta en un proceso zombie.
+    simplesh > sleep 1 &
+    [ PID ]
+    /* Se muestra de nuevo el prompt inmediatamente */
+    simplesh > [ PID ] /* Transcurrido 1 segundo ... */
+    /* Intro */
+    simplesh > ls
+    Makefile simplesh simplesh . c simplesh . o
+Para ello, únicamente se pueden usar llamadas al sistema POSIX o funciones de la biblioteca estándar de C (C11)
+Llamadas POSIX y/o glibc a considerar:
+    sigaction()
+    waitpid()
+____________________________________________________________
+
+1) Bloquear las señales SIGINT y SIGQUIT antes de parse_args()
+2) Modificar run_cmd() para que la ejecución de los comandos en segundo plano no interfiera con la de los comandos en primer plano
+3) Modificar run_cmd() para que la ejecución de los comandos en segundo plano envíe [PID] a stdout
+4) Implementar un manejador de señales para la señal SIGCHLD
+    -El manejador tiene que evitar que los procesos creados para comandos en segundo plano se conviertan en procesos zombies al terminar
+    -El manejador debe enviar [PID] a stdout SÓLO cuando termine la ejecución de un proceso creado para un comando en segundo plano
+    -El manejador no debe interferir con los procesos en primer plano
+    -El manejador sólo debe usar funciones reentrantes (async-signal-safe)
+    -La implementación debe basarse en el esqueleto handle_sigchld() que aparece en Reap zombie processes using a SIGCHLD handler
+    -En este boletín NO pueden usarse primitivas de sincronización
+____________________________________________________________
+
+EJERCICIO 3: Implementa el comando interno bjobs:
+    simplesh > sleep 5 &
+    [ PID0 ]
+    simplesh > sleep 10 &
+    [ PID1 ]
+    simplesh > bjobs    /* Antes de que transcurran 5 segundos ... */
+    [ PID0 ]
+    [ PID1 ]
+    simplesh > [ PID0 ] /* Transcurridos 5 segundos */
+    /* Intro */
+    simplesh > bjobs    /* Transcurridos entre 5 y 10 segundos ... */
+    [ PID1 ]
+    simplesh > [ PID1 ] /* Transcurridos 10 segundos */
+Para ello, únicamente se pueden usar llamadas al sistema POSIX o funciones de la biblioteca estándar de C (C11).
+Llamadas POSIX y/o glibc a considerar:
+    sigaction()
+    waitpid()
+    kill()
+Para implementar bjobs, escribe la función run_bjobs() e inserta llamadas a la misma en simplesh.c donde sea necesario.
+____________________________________________________________
+
+>>>RIAPRI IL PDF DEL BOLETÍN 4<<<

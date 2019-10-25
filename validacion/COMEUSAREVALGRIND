@@ -1,0 +1,4 @@
+valgrind --leak-check=full --show-leak-kinds=all \
+--suppressions=libreadline.supp \
+--trace-children=no --child-silent-after-fork=yes \
+-v ./simplesh 2> valgrind.out
