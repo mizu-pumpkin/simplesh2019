@@ -158,7 +158,20 @@ void remove_from_bpids(pid_t pid)
     sigchld_inhibitor(SIG_UNBLOCK);
 }
 
+// Devuelve el número de dígitos del pid
+int get_pidlen(pid_t pid)
+{
+    int pidlen = 0;
+    
+    while (pid > 0) {
+        pid /= 10;
+        pidlen ++;
+    }
+    
+    return pidlen;
+}
 
+// Devuelve el menor entre dos enteros
 int min(int a, int b)
 {
     if (a < b) return a;
@@ -1603,11 +1616,29 @@ void handle_sigchld(int sig)
 {
     int saved_errno = errno;
     pid_t pid;
+    int buflen, w , res;
     // Evita que los procesos creados para comandos en segundo plano se conviertan en procesos zombies al terminar
     while ((pid = waitpid((pid_t)(-1), 0, WNOHANG)) > 0) {
         remove_from_bpids(pid);
+        // Se crea el buffer que hay que pasar a write()
+        buflen = get_pidlen(pid) + 2;
+        char buf[buflen * sizeof(char)];
+        
+        buf[0] = '[';
+        for (int i = buflen-2; i > 0; i--) {
+            buf[i] = (char)(pid % 10) + '0';
+            pid /= 10;
+        }
+        buf[buflen-1] = ']';
         // Envia [PID] a stdout cuando termina la ejecución de un proceso creado para un comando en segundo plano
-        //printf("[%d]",pid);//TODO usa write(STDOUT_FILENO,etc)
+        w = 0;
+        while ((res = write(STDOUT_FILENO,&buf[w],buflen)) < buflen) {
+            if (res == -1) {
+                perror("handle_sigchld: write");
+                exit(EXIT_FAILURE);
+            }
+            w++;
+        }
     }
     errno = saved_errno;
 }

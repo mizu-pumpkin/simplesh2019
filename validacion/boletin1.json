@@ -2,7 +2,7 @@
     "setup": {
         "desc": "B1r1",
         "shell": "simplesh",
-        "prompt": "mizu@.*> ",
+        "prompt": "simplesh> ",
         "timeout": 3,
         "cmds": [
             "touch f1",
