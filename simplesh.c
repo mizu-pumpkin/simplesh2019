@@ -46,7 +46,8 @@
 
 
 #define NUMERO_INTERNOS 4
-#define DEFAULT_BSIZE 1024
+#define DEFAULT_LINES 1
+#define DEFAULT_BYTES 1024
 #define DEFAULT_PROCS 1
 #define MAX_BSIZE 1048576
 
@@ -111,6 +112,8 @@ int bpids_i;
 
 // Código de retorno de exit
 #define EXIT 1
+#define OPLINES 1
+#define OPBYTES 2
 
 
 /******************************************************************************
@@ -1309,223 +1312,202 @@ void run_cd(struct execcmd * ecmd)
 
 void help_psplit(void)
 {
-    printf("Uso: psplit [-l NLINES] [-b NBYTES] [-s BSIZE] [-p PROCS] [FILE1] [FILE2]...\n\
-            Opciones:\n\
-            -l NLINES Número máximo de líneas por fichero.\n\
-            -b NBYTES Número máximo de bytes por fichero.\n\
-            -s BSIZE  Tamaño en bytes de los bloques leídos de [FILEn] o stdin.\n\
-            -p PROCS  Número máximo de procesos simultáneos.\n\
-            -h        Ayuda\n");
+    printf("Uso: psplit [-l NLINES] [-b NBYTES] [-s BSIZE] [-p PROCS] [FILE1] [FILE2]...\nOpciones:\n\t-l NLINES Número máximo de líneas por fichero.\n\t-b NBYTES Número máximo de bytes por fichero.\n\t-s BSIZE  Tamaño en bytes de los bloques leídos de [FILEn] o stdin.\n\t-p PROCS  Número máximo de procesos simultáneos.\n\t-h        Ayuda\n\n");
 }
 
 
-void run_psplit(char * argv[], int argc)
-{//TODO 
-    int modo = 0;                  // Modo escogido para el procesado:
-                                   //     modo = 0   Sin definir
-                                   //     modo = 1   Líneas
-                                   //     modo = 2   Bytes
-
-    int nlines = 1;                // Nº de líneas a escribir por fichero.
-    int nbytes = 1;                // Nº de bytes a escribir por fichero.
-    size_t bsize = DEFAULT_BSIZE;  // Tamaño de bloque leído.
-    int procs = DEFAULT_PROCS;     // Nº de procesos simultáneos.
-    int fd = 0;                    // Variable para guardar temporalmente el descriptor del fichero.
-    int * files = NULL;            // Vector de descriptores de fichero.
-    int files_size = 0;            // Tamaño del vector anterior.
-    char * buf = NULL;             // Buffer en el que insertar temporalmente los datos.
-    ssize_t size_readed = 0;       // Tamaño leído por un read()
-                                   //     size_readed <= bsize
-    int n;                         // Nº de fichero copiado.
-    char str[256];                 // Nombre del fichero copiado.
-    int size_written;              // Tamaño escrito por el momento en el fichero.
-    int size_extracted;            // Tamaño extraído por el momento del buffer.
-    int size_chosen;
-
-    int lines_written;
-    int lines_found;
-
+void run_psplit(struct execcmd * ecmd)
+{
+    int nmax = DEFAULT_BYTES;       // Nº máximo de lineas/bytes a escribir por fichero
+    size_t bsize = DEFAULT_BYTES;   // Tamaño de buffer de escritura/lectura
+    int procs = DEFAULT_PROCS;      // Nº de procesos simultáneos
     int opt = 0;
-    optind = 1;
-
-    while ((opt = getopt(argc, argv, "hl:b:s:p:")) != -1) {
+    int mode = 0;
+    
+    // Parseamos las opciones
+    optind = 0;
+    while ((opt = getopt(ecmd->argc, ecmd->argv, "hl:b:s:p:")) != -1) {
         switch (opt) {
-        case 'l':
-        if (modo == 0) {    
-            nlines = atoi(optarg);
-            modo = 1;
-        }
-        else {
-            printf("psplit: Opciones incompatibles\n");
-            return;
-        }
-            break;
-        case 'b':
-        if (modo == 0) {
-            nbytes = atoi(optarg);
-            modo = 2;
-        }
-        else {
-            printf("psplit: Opciones incompatibles\n");
-            return;
-        }
-        break;
-        case 's':
-        bsize = atoi(optarg);
-        if ((bsize < 1) || (bsize > MAX_BSIZE)) {
-            printf("psplit: El tamaño de bloque debe estar comprendido entre 1 B y 1 MB\n");
-            return;
-        }
-        break;
-        case 'p':
+            case 'l':
+                if (mode) {
+                    printf("psplit: Opciones incompatibles\n");
+                    return;
+                }  
+                nmax = atoi(optarg);
+                mode = OPLINES;
+                break;
+            case 'b':
+                if (mode) {
+                    printf("psplit: Opciones incompatibles\n");
+                    return;
+                }
+                nmax = atoi(optarg);
+                mode = OPBYTES;
+                break;
+            case 's':
+                bsize = atoi(optarg);
+                if ((bsize < 1) || (bsize > MAX_BSIZE)) {
+                    printf("psplit: Opción -s no válida\n");
+                    return;
+                }
+                break;
+            case 'p':
                 procs = atoi(optarg);
-        if (procs <= 0) {
-            printf("psplit: El número de procesos debe ser superior a cero\n");
-            return;
+                if (procs <= 0) {
+                    printf("psplit: Opción -p no válida\n");
+                    return;
+                }
+                break;
+            case 'h':
+                help_psplit();
+                return;
+                break;
+            default:
+                return;
+                break;
         }
-        break;
-        case 'h':
-        help_psplit();
-        return;
-        break;
-        default:
-        return;
-        break;
     }
-    }
+    
+    if (!mode) mode = OPBYTES;
+    
+    // Reserva de memoria para los array necesarios
+    int * files_fd;                             // Array de descriptores de fichero
+    char ** files_names;                        // Array con los nombres de los ficheros
+    int files_size;                             // Tamaño de los vectores anteriores
+    char * buf = malloc(bsize * sizeof(char));  // Buffer de lectura/escritura
+    int fd = 0;             // Variable para guardar temporalmente el descriptor del fichero
 
-    // Comprobamos que haya un criterio.
-    if (modo == 0) {
-        printf("psplit: Es necesario especificar un criterio de escritura, ya sea por líneas o por bytes.\n");
-    return;
+    if (optind == ecmd->argc)
+    {   // Cuando no hay ningún fichero como parámetro
+        files_size = 1;
+        files_fd = malloc(files_size * sizeof(int));
+        files_names = malloc(files_size * sizeof(char*));
+        files_fd[0] = 0;
+        files_names[0] = "stdin";
     }
-
-    // Reservamos memoria para el buffer.
-    buf = malloc(bsize * sizeof(char));
-    // Inicializamos las cuenta para las escrituras.
-    size_written = 0;
-    size_extracted = 0;
-   
-    // No hay ningún fichero como parámetro.
-    if (optind == argc) {
-    files_size = 1;
-        files = malloc(files_size * sizeof(int));
-    files[0] = 0;
-    }
-    // Sí hay ficheros como parámetros.
-    else {
-    files_size = argc - optind;
-    files = malloc(files_size * sizeof(int));
+    else
+    {   // Cuando hay ficheros como parámetros
+        files_size = ecmd->argc - optind;
+        files_fd = malloc(files_size * sizeof(int));
+        files_names = malloc(files_size * sizeof(char*));
         for (int i = 0; i < files_size; i++) {
-        if ((fd = open(argv[optind + i], O_RDONLY, S_IRWXU)) == -1) {
-            perror("open");
-        exit(EXIT_FAILURE);
-        }
-        files[i] = fd;
-    }
-    }
-
-    // Criterio por líneas.
-    if (modo == 1) {
-        for (int i = 0; i < files_size; i++) {
-        n = 0;
-        fd = -1;
-        lines_written = 0;
-        size_extracted = 0;
-        lines_found = 0;
-        while (1) {
-            buf -= size_extracted;
-        size_extracted = 0;
-        TRY( size_readed = read(files[i], buf, bsize) );
-        if (size_readed == 0) {
-            if (fd != -1) {
-                TRY( fsync(fd) );
-            TRY( close(fd) );
+            if ((fd = open(ecmd->argv[optind + i], O_RDONLY, S_IRWXU)) == -1) {
+                perror("run_psplit: open");
+                exit(EXIT_FAILURE);
             }
-            break;
+            files_fd[i] = fd;
+            files_names[i] = ecmd->argv[optind + i];
         }
-                if (fd == -1) {
-                    sprintf(str, "%s%d", argv[optind + i], n);
+    }
+
+    // Ejecución de psplit
+    int workers = 0;    // Nº de procesos ejecutando el bucle principal
+    char str[256];      // Nombre del fichero copiado
+    int n;              // Nº de fichero copiado
+    int written;        // Líneas/bytes escritos en el fichero actualmente
+    int extracted;      // Tamaño extraído por el momento del buffer
+    ssize_t readed;     // Tamaño leído por un read() siendo readed <= bsize
+    int lines_found;    // Nº de líneas encontradas en el buffer (se usa con la opción -l)
+    int lines_index;    // Índice para iterar el buffer (se usa con la opción -l)
+    int size_chosen;    // Tamaño seleccionado para escribir en el fichero (se usa con la opción -b)
+    
+    for (int i = 0; i < files_size; i++)
+    {
+        fd = -1;
+        n = 0;
+        written = 0;
+        extracted = 0;
+        sigchld_inhibitor(SIG_BLOCK);
+        if (workers == procs)
+        {
+            TRY( wait(NULL) );
+            workers--;
+        }
+        workers++;
+        if (fork_or_panic("psplit") == 0)
+        {
+            while (1)
+            {
+                buf -= extracted;
+                extracted = 0;
+                TRY( readed = read(files_fd[i], buf, bsize) );
+                if (readed == 0)
+                {
+                    if (fd != -1)
+                    {
+                        TRY( fsync(fd) );
+                        TRY( close(fd) );
+                    }
+                    break;
+                }
+                if (fd == -1)
+                {
+                    sprintf(str, "%s%d", files_names[i], n);
                     n++;
                     TRY( fd = open(str, O_WRONLY|O_CREAT|O_TRUNC, S_IRWXU) );
                 }
-                while (size_extracted < size_readed) {
-            if (lines_written == nlines) {
-                TRY( fsync(fd) );
-            TRY( close(fd) );
-            lines_written = 0;
-            sprintf(str, "%s%d", argv[optind + i], n);
+                while (extracted < readed)
+                {
+                    if (written == nmax)
+                    {
+                        TRY( fsync(fd) );
+                        TRY( close(fd) );
+                        written = 0;
+                        sprintf(str, "%s%d", files_names[i], n);
                         n++;
                         TRY( fd = open(str, O_WRONLY|O_CREAT|O_TRUNC, S_IRWXU) );
+                    }
+                    /* Esta parte del psplit es la única que difiere según se seleccione
+                     * -l o -b, todo lo demás es igual. Para no repetir código hemos puesto
+                     * un switch aquí, aunque tal y como está tendría que ejecutarse en cada
+                     * iteración. Suponemos que el compilador se encargaría de optimizar el
+                     * código ya que la variable mode toma un valor antes de que empiece el
+                     * bucle y no vuelve a cambiar en lo que queda de función.
+                     */
+                    switch(mode) {
+                        case OPBYTES:
+                            size_chosen = min(nmax - written, readed - extracted); 
+                            TRY( write(fd, buf, size_chosen) );
+                            written += size_chosen;
+                            extracted += size_chosen;
+                            buf += size_chosen;
+                            break;
+                        case OPLINES:
+                            lines_found = 0;
+                            lines_index = 0;
+                            while ((((extracted + lines_index) < readed) && ((written + lines_found) < nmax)))
+                            {
+                                if (buf[lines_index] == '\n')
+                                    lines_found++;
+                                lines_index++;
+                            }
+                            TRY( write(fd, buf, lines_index) );
+                            written += lines_found;
+                            extracted += lines_index;
+                            buf += lines_index;
+                            break;
+                    }
+                }
             }
-            else {
-                while ((size_extracted != size_readed) && ((nlines - (lines_written + lines_found)) != 0)) {
-                            if (buf[size_extracted] == '\n')
-                    lines_found++;
-                size_extracted++;
-            }
-            size_extracted--;
-                        TRY( write(fd, buf, size_extracted) );
-            lines_written += lines_found;
-            buf += size_extracted;
-            }
-        }
-        }
-    }
-    }
-    // Criterio por bytes.
-    else if (modo == 2) {
-    // Bucle que itera cada fichero.
-        for (int i = 0; i < files_size; i++) {
-            n = 0;
-        fd = -1;
-        size_written = 0;
-        size_extracted = 0;
-        while (1) {
-        buf -= size_extracted;
-        size_extracted = 0;
-                TRY( size_readed = read(files[i], buf, bsize) );
-        if (size_readed == 0) {
-            if (fd != -1) {
-                TRY( fsync(fd) );
-            TRY( close(fd) );
-            }
-            break;
-        }
-        if (fd == -1) {
-            sprintf(str, "%s%d", argv[optind + i], n);
-            n++;
-            TRY( fd = open(str, O_WRONLY|O_CREAT|O_TRUNC, S_IRWXU) );
-        }
-        while (size_extracted < size_readed) {
-            if (size_written == nbytes) {
-                TRY( fsync(fd) );
-            TRY( close(fd) );
-            size_written = 0;
-            sprintf(str, "%s%d", argv[optind + i], n);
-            n++;
-            TRY( fd = open(str, O_WRONLY|O_CREAT|O_TRUNC, S_IRWXU) );
-            }
-            else {
-            size_chosen = min(nbytes - size_written, size_readed - size_extracted); 
-                    TRY( write(fd, buf, size_chosen) );
-                        size_written += size_chosen;
-            size_extracted += size_chosen;
-            buf += size_chosen;
-            }
-        }
+            exit(EXIT_SUCCESS);
         }
     }
+    
+    while (workers > 0) {
+        TRY ( wait(NULL) );
+        workers--;
     }
+    sigchld_inhibitor(SIG_UNBLOCK);
 
     // Cerramos los ficheros abiertos.
-    if (optind != argc)
+    if (optind != ecmd->argc)
         for (int i = 0; i < files_size; i++)
-            TRY( close(files[i]) );
+            TRY( close(files_fd[i]) );
     
-    // Liberamos la memoria reservada.
-    free(files);
+    // Liberamos memoria
     free(buf);
+    free(files_fd);
+    free(files_names);
 }
 
 
@@ -1549,7 +1531,7 @@ void parse_bjobs(struct execcmd * ecmd)
             case 'k':
                 sigchld_inhibitor(SIG_BLOCK);
                 for (int i = 0; i < bpids_i; i++)
-                    TRY ( kill(bpids[i], SIGKILL) );    //FIXME SIGTERM?
+                    TRY ( kill(bpids[i], SIGTERM) );
                 sigchld_inhibitor(SIG_UNBLOCK);
                 break;
             case 'h':
@@ -1582,7 +1564,7 @@ int exec_internal(struct cmd * cmd, int command)
         case 0: run_cwd(); break;
         case 1: return run_exit(cmd); break;
         case 2: run_cd(ecmd); break;
-        case 3: run_psplit(ecmd->argv, ecmd->argc); break;
+        case 3: run_psplit(ecmd); break;
         case 4: run_bjobs(ecmd); break;
         default: panic("no se encontró el comando '%s'\n", ecmd->argv[0]); break;
     }
