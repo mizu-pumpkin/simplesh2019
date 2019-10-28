@@ -45,7 +45,6 @@
  ******************************************************************************/
 
 
-#define NUMERO_INTERNOS 4
 #define DEFAULT_LINES 1
 #define DEFAULT_BYTES 1024
 #define DEFAULT_PROCS 1
@@ -112,7 +111,10 @@ int bpids_i;
 
 // Código de retorno de exit
 #define EXIT 1
+
+// Código de la opción -l de psplit
 #define OPLINES 1
+// Código de la opción -b de psplit
 #define OPBYTES 2
 
 
@@ -122,7 +124,7 @@ int bpids_i;
 
 
 // Bloquea o desbloquea la señal SIGCHLD
-// Valores para how: SIG_BLOCK o SIG_UNBLOCK
+// Valores que debería tomar how: SIG_BLOCK o SIG_UNBLOCK
 void sigchld_inhibitor(int how)
 {    
     sigset_t sigchldset;
@@ -144,6 +146,7 @@ void add_to_bpids(pid_t pid)
     sigchld_inhibitor(SIG_UNBLOCK);
 }
 
+
 // Elimina el pid del array de pids de procesos en background activos
 void remove_from_bpids(pid_t pid)
 {
@@ -161,6 +164,7 @@ void remove_from_bpids(pid_t pid)
     sigchld_inhibitor(SIG_UNBLOCK);
 }
 
+
 // Devuelve el número de dígitos del pid
 int get_pidlen(pid_t pid)
 {
@@ -173,6 +177,7 @@ int get_pidlen(pid_t pid)
     
     return pidlen;
 }
+
 
 // Devuelve el menor entre dos enteros
 int min(int a, int b)
@@ -538,7 +543,6 @@ struct cmd* null_terminate(struct cmd*);
 
 int check_internal(struct cmd * cmd);
 int exec_internal(struct cmd * cmd, int command);
-void register_handler(void);
 
 
 // `parse_cmd` realiza el *análisis sintáctico* de la línea de órdenes
@@ -864,8 +868,8 @@ int run_cmd(struct cmd* cmd)
     struct subscmd* scmd;
     int p[2];
     int fd, old_fd;
-    int interno = -1;
-    int exit_on = 0;
+    int interno = -1;       // Para saber si un comando es interno o no
+    int exit_on = 0;        // Para saber si se ha ejecutado el comando 'exit'
     pid_t pidhijo, pidhijo2;
 
     DPRINTF(DBG_TRACE, "STR\n");
@@ -1255,7 +1259,7 @@ void run_cwd(void)
 }
 
 
-int run_exit(struct cmd * cmd)
+int run_exit()
 {
     return EXIT;
 }
@@ -1417,6 +1421,7 @@ void run_psplit(struct execcmd * ecmd)
         n = 0;
         written = 0;
         extracted = 0;
+        
         sigchld_inhibitor(SIG_BLOCK);
         if (workers == procs)
         {
@@ -1424,7 +1429,7 @@ void run_psplit(struct execcmd * ecmd)
             workers--;
         }
         workers++;
-        if (fork_or_panic("psplit") == 0)
+        if (fork_or_panic("fork PSPLIT") == 0)
         {
             while (1)
             {
@@ -1461,7 +1466,7 @@ void run_psplit(struct execcmd * ecmd)
                      * -l o -b, todo lo demás es igual. Para no repetir código hemos puesto
                      * un switch aquí, aunque tal y como está tendría que ejecutarse en cada
                      * iteración. Suponemos que el compilador se encargaría de optimizar el
-                     * código ya que la variable mode toma un valor antes de que empiece el
+                     * código ya que la variable 'mode' toma un valor antes de que empiece el
                      * bucle y no vuelve a cambiar en lo que queda de función.
                      */
                     switch(mode) {
@@ -1562,7 +1567,7 @@ int exec_internal(struct cmd * cmd, int command)
     
     switch(command) {
         case 0: run_cwd(); break;
-        case 1: return run_exit(cmd); break;
+        case 1: return run_exit(); break;
         case 2: run_cd(ecmd); break;
         case 3: run_psplit(ecmd); break;
         case 4: run_bjobs(ecmd); break;
@@ -1580,11 +1585,11 @@ int exec_internal(struct cmd * cmd, int command)
 void treat_signals(void)
 {
     sigset_t blockedsigset;
-    //simplesh debe bloquear la señal SIGINT (CTRL+C)
+    // Bloqueamos la señal SIGINT (CTRL+C)
     TRY ( sigemptyset(&blockedsigset) );
     TRY ( sigaddset(&blockedsigset, SIGINT) );
     TRY ( sigprocmask(SIG_BLOCK, &blockedsigset, NULL) );
-    //simplesh debe ignorar la señal SIGQUIT (CTRL+\)
+    // Ignoramos la señal SIGQUIT (CTRL+\)
     struct sigaction sigact;
     sigact.sa_handler = SIG_IGN;
     sigemptyset(&sigact.sa_mask);
@@ -1594,15 +1599,19 @@ void treat_signals(void)
 
 
 // Manejador de señales para la señal SIGCHLD
+// Evita que los procesos creados para comandos en segundo plano se conviertan en procesos zombies al terminar
 void handle_sigchld(int sig)
 {
     int saved_errno = errno;
     pid_t pid;
-    int buflen, w , res;
-    // Evita que los procesos creados para comandos en segundo plano se conviertan en procesos zombies al terminar
+    int buflen; // Tamaño del buffer que se pasa como parámetro a write
+    int w;      // Índice para iterar el buffer
+    int res;    // Valor de retorno de write para manejo de errores
+    
     while ((pid = waitpid((pid_t)(-1), 0, WNOHANG)) > 0) {
+        // Eliminamos el pid del array de procesos en background activos
         remove_from_bpids(pid);
-        // Se crea el buffer que hay que pasar a write()
+        // Creación del buffer de escritura
         buflen = get_pidlen(pid) + 2;
         char buf[buflen * sizeof(char)];
         
@@ -1612,7 +1621,7 @@ void handle_sigchld(int sig)
             pid /= 10;
         }
         buf[buflen-1] = ']';
-        // Envia [PID] a stdout cuando termina la ejecución de un proceso creado para un comando en segundo plano
+        // Enviamos el [PID] a stdout al terminar la ejecución de un proceso en background
         w = 0;
         while ((res = write(STDOUT_FILENO,&buf[w],buflen)) < buflen) {
             if (res == -1) {
