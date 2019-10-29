@@ -1426,7 +1426,6 @@ void run_psplit(struct execcmd * ecmd)
         written = 0;
         extracted = 0;
         
-        sigchld_inhibitor(SIG_BLOCK);
         if (workers == procs)
         {
             TRY( wait(NULL) );
@@ -1506,7 +1505,6 @@ void run_psplit(struct execcmd * ecmd)
         TRY ( wait(NULL) );
         workers--;
     }
-    sigchld_inhibitor(SIG_UNBLOCK);
 
     // Cerramos los ficheros abiertos.
     if (optind != ecmd->argc)
@@ -1567,17 +1565,21 @@ void run_bjobs(struct execcmd * ecmd)
 
 int exec_internal(struct cmd * cmd, int command)
 {
+    int exit_on = 0;
     struct execcmd* ecmd = (struct execcmd*) cmd;
     
+    sigchld_inhibitor(SIG_BLOCK);
     switch(command) {
         case 0: run_cwd(); break;
-        case 1: return run_exit(); break;
+        case 1: exit_on = run_exit(); break;
         case 2: run_cd(ecmd); break;
         case 3: run_psplit(ecmd); break;
         case 4: run_bjobs(ecmd); break;
         default: panic("no se encontró el comando '%s'\n", ecmd->argv[0]); break;
     }
-    return 0;
+    sigchld_inhibitor(SIG_UNBLOCK);
+    
+    return exit_on;
 }
 
 
@@ -1617,7 +1619,7 @@ void handle_sigchld(int sig)
         remove_from_bpids(pid);
         // Creación del buffer de escritura
         buflen = get_pidlen(pid) + 2;
-        char buf[buflen * sizeof(char)];
+        char buf[buflen];
         
         buf[0] = '[';
         for (int i = buflen-2; i > 0; i--) {
@@ -1632,7 +1634,7 @@ void handle_sigchld(int sig)
                 perror("handle_sigchld: write");
                 exit(EXIT_FAILURE);
             }
-            w++;
+            w += res;//FIXME
         }
     }
     errno = saved_errno;
